@@ -14,6 +14,11 @@ pub struct AppConfig {
     pub ui_language: String,
     pub show_donate: bool,
     pub theme: String,
+    /// The Roman-script face chosen on the Font page; `None` keeps the
+    /// platform's own UI face.
+    pub latin_font: Option<String>,
+    /// The Han face, used as the fallback for CJK characters.
+    pub han_font: Option<String>,
 }
 
 impl Default for AppConfig {
@@ -24,6 +29,8 @@ impl Default for AppConfig {
             ui_language: "english".to_string(),
             show_donate: true,
             theme: "ocean".to_string(),
+            latin_font: None,
+            han_font: None,
         }
     }
 }
