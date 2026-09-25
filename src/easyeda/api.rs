@@ -386,9 +386,22 @@ impl EasyedaApi {
                         .get("title")
                         .and_then(|v| v.as_str())
                         .map(|s| s.to_string());
+                    // The model is drawn in the footprint only after applying `c_rotation`;
+                    // dropping it leaves every footprint whose model is rotated at 90
+                    // degrees with the 3D body across the pads instead of on them.
+                    let rotation_z = attrs
+                        .get("c_rotation")
+                        .and_then(|v| v.as_str())
+                        .and_then(|text| text.split(',').nth(2))
+                        .and_then(|value| value.trim().parse::<f64>().ok())
+                        .unwrap_or(0.0);
 
                     if let (Some(uuid), Some(title)) = (uuid, title) {
-                        return Some(Model3dInfo { uuid, title });
+                        return Some(Model3dInfo {
+                            uuid,
+                            title,
+                            rotation_z,
+                        });
                     }
                 }
             }

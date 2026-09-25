@@ -1,6 +1,23 @@
 use encoding_rs::GBK;
 use serde_json::Value;
 
+/// Convert EasyEDA's 3D model rotation into the angle written to KiCad footprints and Altium
+/// 3D bodies.
+///
+/// EasyEDA stores the model angle in its footprint frame, where `+Y` runs down the screen, while
+/// both targets rotate the model around the Z axis of a frame whose `+Y` points up. The same
+/// visual rotation therefore has the opposite sign. Verified with KiCad renders: a footprint
+/// whose model is stored with 90 degrees only lands on its pads with a 270 degree rotation, and
+/// a stored 0 stays 0.
+pub fn model_rotation_z(easyeda_degrees: f64) -> f64 {
+    if !easyeda_degrees.is_finite() {
+        return 0.0;
+    }
+    let converted = (-easyeda_degrees).rem_euclid(360.0);
+    // `rem_euclid` can hand back -0.0 for a zero angle; normalise it so exported files stay stable.
+    if converted == 0.0 { 0.0 } else { converted }
+}
+
 pub fn sanitize_filename(name: &str) -> String {
     let cleaned: String = name
         .chars()
@@ -151,7 +168,20 @@ pub fn split_obj_and_mtl(content: &str) -> (String, String) {
 
 #[cfg(test)]
 mod tests {
-    use super::{repair_misdecoded_gbk_text, sanitize_filename, split_obj_and_mtl};
+    use super::{
+        model_rotation_z, repair_misdecoded_gbk_text, sanitize_filename, split_obj_and_mtl,
+    };
+
+    #[test]
+    fn converts_easyeda_model_rotation_into_body_rotation() {
+        assert_eq!(model_rotation_z(0.0), 0.0);
+        assert_eq!(model_rotation_z(90.0), 270.0);
+        assert_eq!(model_rotation_z(180.0), 180.0);
+        assert_eq!(model_rotation_z(270.0), 90.0);
+        assert_eq!(model_rotation_z(-90.0), 90.0);
+        assert_eq!(model_rotation_z(360.0), 0.0);
+        assert_eq!(model_rotation_z(f64::NAN), 0.0);
+    }
 
     #[test]
     fn sanitizes_windows_unsafe_characters() {

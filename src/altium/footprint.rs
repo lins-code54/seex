@@ -9,7 +9,7 @@ use super::pcblib::{
     PcbRegion, PcbTrack, stable_guid,
 };
 use crate::error::{AppError, Result};
-use crate::util::{nested_string, sanitize_filename, value_to_string};
+use crate::util::{model_rotation_z, nested_string, sanitize_filename, value_to_string};
 
 const FOOTPRINT_UNIT_TO_MM: f64 = 0.0254;
 const RAW_PER_MIL: f64 = 10_000.0;
@@ -657,7 +657,9 @@ pub fn build_pcblib_from_payload(
             model_2d_rotation: 0.0,
             model_3d_rot_x: 0.0,
             model_3d_rot_y: 0.0,
-            model_3d_rot_z: 0.0,
+            // Without this the embedded STEP lands 90 degrees off on every footprint whose
+            // EasyEDA model is stored rotated (see `model_rotation_z`).
+            model_3d_rot_z: model_rotation_z(model.rotation_z),
             model_3d_dz_raw: 0,
             model_checksum: 0,
             model_name: model_name.clone(),
@@ -678,7 +680,7 @@ pub fn build_pcblib_from_payload(
             model_source: "Undefined".to_string(),
             rotation_x: 0.0,
             rotation_y: 0.0,
-            rotation_z: 0.0,
+            rotation_z: model_rotation_z(model.rotation_z),
             dz_raw: 0,
             checksum: 0,
             step_data: step_data.to_vec(),
@@ -799,10 +801,13 @@ fn parse_footprint_3d_model(payload: &Value) -> Option<Model3dRaw> {
         .map(str::trim)
         .filter(|part| !part.is_empty())
         .collect();
+    // The transform is "<size x>,<size y>,<size z>,<rot z>,<rot y>,<rot x>,<offset x>,<offset y>,...";
+    // the Z rotation is the one EasyEDA applies when it draws the model on the footprint (it matches
+    // the footprint's `c_rotation`), so it has to become the 3D body's rotation.
     if parts.len() >= 6 {
-        result.rotation_x = parts[3].parse().unwrap_or(0.0);
+        result.rotation_z = parts[3].parse().unwrap_or(0.0);
         result.rotation_y = parts[4].parse().unwrap_or(0.0);
-        result.rotation_z = parts[5].parse().unwrap_or(0.0);
+        result.rotation_x = parts[5].parse().unwrap_or(0.0);
     }
     Some(result)
 }
@@ -1793,6 +1798,35 @@ mod tests {
         );
         assert_eq!(component.bodies.len(), 1);
         assert_eq!(library.models.len(), 1);
+    }
+
+    #[test]
+    fn applies_easyeda_model_rotation_to_the_component_body() {
+        let payload = json!({"result": {"dataStr": r#"["DOCTYPE","FOOTPRINT","1.8"]
+["PAD","e1",0,"",1,"1",0,0,0,null,["RECT",20,30,0],[],0,0,0,1]"#,
+            "model_3d": {"title":"BODY-H1.2", "uri":"modeluuid", "transform":"236.22,192.913,0,90,0,0,0,0,0"}}});
+        let library =
+            build_pcblib_from_payload(&payload, "SOP-8", Some(b"ISO-10303-21;END-ISO-10303-21;"))
+                .unwrap();
+        let body = &library.components[0].bodies[0];
+
+        // EasyEDA stores the angle for a frame whose +Y points down: a stored 90 becomes a
+        // 270 degree rotation for the exported 3D body.
+        assert_eq!(body.model_3d_rot_z, 270.0);
+        assert_eq!(library.models[0].rotation_z, 270.0);
+    }
+
+    #[test]
+    fn keeps_unrotated_models_unrotated() {
+        let payload = json!({"result": {"dataStr": r#"["DOCTYPE","FOOTPRINT","1.8"]
+["PAD","e1",0,"",1,"1",0,0,0,null,["RECT",20,30,0],[],0,0,0,1]"#,
+            "model_3d": {"title":"BODY-H1.2", "uri":"modeluuid", "transform":"192.913,236.22,0,0,0,0,0,0,0"}}});
+        let library =
+            build_pcblib_from_payload(&payload, "SOIC-8", Some(b"ISO-10303-21;END-ISO-10303-21;"))
+                .unwrap();
+        let body = &library.components[0].bodies[0];
+
+        assert_eq!(body.model_3d_rot_z, 0.0);
     }
 
     #[test]

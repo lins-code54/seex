@@ -443,9 +443,15 @@ pub fn convert_footprint(
 
         ki_footprint.model_3d = Some(kicad::Ki3dModel {
             path: model_path,
+            // EasyEDA already stores the model where it belongs: only its rotation is missing
+            // from the exported footprint, so no translation is needed here.
             offset: (0.0, 0.0, 0.0),
             scale: (1.0, 1.0, 1.0),
-            rotate: (0.0, 0.0, 0.0),
+            rotate: (
+                0.0,
+                0.0,
+                crate::util::model_rotation_z(model_info.rotation_z),
+            ),
         });
     }
 
