@@ -452,12 +452,18 @@ impl SeexApp {
                     .color(text_color()),
             );
             ui.add_space(8.0);
-            ui.add_sized(
-                Vec2::new(ui.available_width(), 92.0),
-                TextEdit::multiline(&mut self.manual_import_text)
-                    .desired_width(f32::INFINITY)
-                    .hint_text(input_hint),
-            );
+            let available_width = ui.available_width();
+            ScrollArea::vertical()
+                .max_height(92.0)
+                .min_scrolled_height(92.0)
+                .show(ui, |ui| {
+                    ui.add_sized(
+                        Vec2::new(available_width - 8.0, 0.0),
+                        TextEdit::multiline(&mut self.manual_import_text)
+                            .desired_width(available_width - 8.0)
+                            .hint_text(input_hint),
+                    );
+                });
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 if ui.button(import_label).clicked() {
