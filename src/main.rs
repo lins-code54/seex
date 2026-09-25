@@ -161,6 +161,17 @@ struct FileDialogResult {
     path: Option<PathBuf>,
 }
 
+enum ToastMessage {
+    Success(String),
+    Error(String),
+    Info(String),
+}
+
+struct ToastState {
+    message: Option<ToastMessage>,
+    show_until: Option<Instant>,
+}
+
 struct SeexApp {
     state: Arc<Mutex<MonitorState>>,
     _monitor: MonitorHandle,
@@ -189,6 +200,10 @@ struct SeexApp {
     file_dialog_tx: Sender<FileDialogResult>,
     file_dialog_rx: Receiver<FileDialogResult>,
     file_dialog_running: bool,
+    file_dialog_start_time: Option<Instant>,
+    toast_state: ToastState,
+    config_dirty: bool,
+    config_save_time: Option<Instant>,
 }
 
 impl SeexApp {
@@ -249,6 +264,13 @@ impl SeexApp {
             file_dialog_tx,
             file_dialog_rx,
             file_dialog_running: false,
+            file_dialog_start_time: None,
+            toast_state: ToastState {
+                message: None,
+                show_until: None,
+            },
+            config_dirty: false,
+            config_save_time: None,
         }
     }
 
@@ -258,6 +280,7 @@ impl SeexApp {
         }
 
         self.file_dialog_running = true;
+        self.file_dialog_start_time = Some(Instant::now());
         let sender = self.file_dialog_tx.clone();
         let ctx = ctx.clone();
         std::thread::spawn(move || {
@@ -274,8 +297,18 @@ impl SeexApp {
     }
 
     fn poll_file_dialog(&mut self) {
+        // Check for timeout (30 seconds)
+        if let Some(start_time) = self.file_dialog_start_time {
+            if start_time.elapsed() > Duration::from_secs(30) {
+                self.file_dialog_running = false;
+                self.file_dialog_start_time = None;
+                self.show_toast_error(self.t("File dialog timeout", "文件对话框超时"));
+            }
+        }
+
         while let Ok(result) = self.file_dialog_rx.try_recv() {
             self.file_dialog_running = false;
+            self.file_dialog_start_time = None;
             if let Some(path) = result.path {
                 if let Ok(mut state) = self.state.lock() {
                     let path = monitor::normalize_path_string(&path.to_string_lossy());
@@ -284,7 +317,7 @@ impl SeexApp {
                         FileDialogKind::PickFolder => state.set_export_output_path(path),
                     }
                 }
-                self.save_config();
+                self.mark_config_dirty();
             }
         }
     }
@@ -293,6 +326,81 @@ impl SeexApp {
         match self.lang {
             Lang::En => en,
             Lang::Zh => zh,
+        }
+    }
+
+    fn show_toast_success(&mut self, message: impl Into<String>) {
+        self.toast_state.message = Some(ToastMessage::Success(message.into()));
+        self.toast_state.show_until = Some(Instant::now() + Duration::from_secs(3));
+    }
+
+    fn show_toast_error(&mut self, message: impl Into<String>) {
+        self.toast_state.message = Some(ToastMessage::Error(message.into()));
+        self.toast_state.show_until = Some(Instant::now() + Duration::from_secs(4));
+    }
+
+    fn show_toast_info(&mut self, message: impl Into<String>) {
+        self.toast_state.message = Some(ToastMessage::Info(message.into()));
+        self.toast_state.show_until = Some(Instant::now() + Duration::from_secs(2));
+    }
+
+    fn mark_config_dirty(&mut self) {
+        self.config_dirty = true;
+        self.config_save_time = Some(Instant::now() + Duration::from_millis(500));
+    }
+
+    fn process_config_save(&mut self) {
+        if self.config_dirty {
+            if let Some(save_time) = self.config_save_time {
+                if Instant::now() >= save_time {
+                    self.save_config();
+                    self.config_dirty = false;
+                    self.config_save_time = None;
+                }
+            }
+        }
+    }
+
+    fn render_toast(&mut self, ctx: &Context) {
+        if let Some(show_until) = self.toast_state.show_until {
+            if Instant::now() > show_until {
+                self.toast_state.message = None;
+                self.toast_state.show_until = None;
+                return;
+            }
+
+            if let Some(ref message) = self.toast_state.message {
+                let (text, bg_color) = match message {
+                    ToastMessage::Success(msg) => (msg.as_str(), success()),
+                    ToastMessage::Error(msg) => (msg.as_str(), danger()),
+                    ToastMessage::Info(msg) => (msg.as_str(), primary()),
+                };
+
+                let toast_width = 300.0;
+                let toast_height = 60.0;
+                let margin = 20.0;
+
+                egui::Window::new("toast")
+                    .title_bar(false)
+                    .resizable(false)
+                    .collapsible(false)
+                    .anchor(egui::Align2::RIGHT_TOP, [-margin, margin])
+                    .fixed_size([toast_width, toast_height])
+                    .frame(
+                        Frame::new()
+                            .fill(bg_color)
+                            .inner_margin(Margin::same(12)),
+                    )
+                    .show(ctx, |ui| {
+                        ui.vertical_centered(|ui| {
+                            ui.label(
+                                RichText::new(text)
+                                    .color(Color32::WHITE)
+                                    .size(scaled_font(24.0)),
+                            );
+                        });
+                    });
+            }
         }
     }
 
@@ -327,7 +435,6 @@ impl SeexApp {
         // The manual-import content naturally settles at roughly this height;
         // use it as the shared baseline for the neighboring export panel.
         const MONITOR_PANEL_HEIGHT: f32 = 267.0;
-        let mut save_config = false;
         let mut open_save_csv_dialog = false;
         ui.horizontal_wrapped(|ui| {
             ui.label(self.t("Match mode:", "匹配模式:"));
@@ -345,49 +452,39 @@ impl SeexApp {
                 self.match_full = !self.match_full;
                 self.set_keyword_from_modes();
             }
-            if let Ok(mut state) = self.state.lock() {
-                let monitoring_label = if state.monitoring {
-                    self.t("Monitoring", "监听中")
-                } else {
-                    self.t("Paused", "已暂停")
-                };
-                if ui
-                    .add(egui::Button::new(monitoring_label).selected(state.monitoring))
-                    .clicked()
-                {
-                    state.monitoring = !state.monitoring;
-                    if state.monitoring {
-                        state.last_content.clear();
-                        state.initialized = false;
-                    }
-                }
-            }
         });
 
         ui.add_space(10.0);
+        let mut open_save_csv_dialog = false;
+        let mut mark_dirty = false;
+
         ui.columns(2, |columns| {
             self.manual_import_panel(&mut columns[0], MONITOR_PANEL_HEIGHT);
 
             if let Ok(mut state) = self.state.lock() {
+                let export_files_title = self.t("Export files", "导出文件");
+                let export_files_desc = self.t(
+                    "BOM CSV for component keeping.",
+                    "用于元件管理的 BOM CSV 文件。",
+                );
+                let browse_label = self.t("Browse", "浏览");
+                let bom_csv_label = self.t("BOM CSV file:", "BOM CSV 文件:");
+                let metadata_label = self.t("Metadata language:", "元数据语言:");
+                let chinese_label = self.t("Chinese", "中文");
+                let english_label = self.t("English", "英文");
+
                 section_with_min_height(&mut columns[1], MONITOR_PANEL_HEIGHT, |ui| {
                     ui.horizontal(|ui| {
-                        section_header(
-                            ui,
-                            self.t("Export files", "导出文件"),
-                            self.t(
-                                "BOM CSV for component keeping.",
-                                "用于元件管理的 BOM CSV 文件。",
-                            ),
-                        );
+                        section_header(ui, export_files_title, export_files_desc);
                         ui.with_layout(Layout::right_to_left(egui::Align::TOP), |ui| {
-                            if ui.button(self.t("Browse", "浏览")).clicked() {
+                            if ui.button(browse_label).clicked() {
                                 open_save_csv_dialog = true;
                             }
                         });
                     });
                     ui.add_space(10.0);
                     ui.horizontal(|ui| {
-                        fixed_label(ui, self.t("BOM CSV file:", "BOM CSV 文件:"));
+                        fixed_label(ui, bom_csv_label);
                         let input_width = ui.available_width().max(80.0);
                         if ui
                             .add_sized(
@@ -398,41 +495,42 @@ impl SeexApp {
                         {
                             state.matched_save_path =
                                 monitor::normalize_path_string(&state.matched_save_path);
-                            save_config = true;
+                            mark_dirty = true;
                         }
                     });
                     ui.horizontal(|ui| {
-                        fixed_label(ui, self.t("Metadata language:", "元数据语言:"));
+                        fixed_label(ui, metadata_label);
                         if ui
                             .selectable_label(
                                 state.bom_language != "english",
-                                self.t("Chinese", "中文"),
+                                chinese_label,
                             )
                             .clicked()
                         {
                             state.set_bom_language("chinese".to_string());
-                            save_config = true;
+                            mark_dirty = true;
                         }
                         if ui
                             .selectable_label(
                                 state.bom_language == "english",
-                                self.t("English", "英文"),
+                                english_label,
                             )
                             .clicked()
                         {
                             state.set_bom_language("english".to_string());
-                            save_config = true;
+                            mark_dirty = true;
                         }
                     });
                     ui.add_space(18.0);
                 });
             }
         });
+
         if open_save_csv_dialog {
             self.start_file_dialog(FileDialogKind::SaveCsv, ui.ctx());
         }
-        if save_config {
-            self.save_config();
+        if mark_dirty {
+            self.mark_config_dirty();
         }
 
         ui.add_space(10.0);
@@ -524,6 +622,14 @@ impl SeexApp {
                     .unwrap_or_default();
                 if !ids.is_empty() {
                     copy_to_clipboard(&ids.join("\n"));
+                    let count = ids.len();
+                    if self.lang == Lang::En {
+                        self.show_toast_success(format!("Copied {} IDs", count));
+                    } else {
+                        self.show_toast_success(format!("已复制 {} 个 ID", count));
+                    }
+                } else {
+                    self.show_toast_info(self.t("No IDs to copy", "没有可复制的 ID"));
                 }
             }
             if ui
@@ -550,13 +656,12 @@ impl SeexApp {
                         state.clear_all();
                     }
                     self.clear_confirm = false;
+                    self.show_toast_info(self.t("Cleared all data", "已清空所有数据"));
                 }
                 if ui.button(self.t("No", "否")).clicked() {
                     self.clear_confirm = false;
                 }
             }
-            let show_list = self.t("Show list", "显示列表");
-            toggle_button(ui, &mut self.show_matched, show_list);
         });
 
         if let Some(result) = bom_result {
@@ -575,9 +680,6 @@ impl SeexApp {
             section_header_inline(ui, self.t("Matched", "匹配结果"), |ui| {
                 count_chip(ui, items.len(), primary());
             });
-            if !self.show_matched {
-                return;
-            }
             if items.is_empty() {
                 empty_state(ui, self.t("No matches yet", "暂无匹配结果"));
                 return;
@@ -599,6 +701,7 @@ impl SeexApp {
                                     }
                                     if ui.small_button(self.t("Copy", "复制")).clicked() {
                                         copy_to_clipboard(&item.lcsc_id);
+                                        self.show_toast_success(self.t("Copied", "已复制"));
                                     }
                                 });
                             });
@@ -624,15 +727,9 @@ impl SeexApp {
             section_header_inline(ui, self.t("History", "历史"), |ui| {
                 count_chip(ui, history.len(), primary());
             });
-            let show_history = self.t("Show history", "显示历史");
-            toggle_button(ui, &mut self.show_history, show_history);
 
             if history.is_empty() {
                 empty_state(ui, self.t("No history yet", "暂无历史记录"));
-                return;
-            }
-
-            if !self.show_history {
                 return;
             }
 
@@ -653,6 +750,7 @@ impl SeexApp {
                                     }
                                     if ui.small_button(self.t("Copy", "复制")).clicked() {
                                         copy_to_clipboard(content);
+                                        self.show_toast_success(self.t("Copied", "已复制"));
                                     }
                                 });
                             });
@@ -669,7 +767,6 @@ impl SeexApp {
 
     fn export_page(&mut self, ui: &mut Ui) {
         let mut request = None;
-        let mut save_config = false;
         let mut open_pick_folder_dialog = false;
         let mut schematic_stroke_color = self.schematic_stroke_color;
         let mut schematic_fill_color = self.schematic_fill_color;
@@ -679,23 +776,51 @@ impl SeexApp {
         let mut toggle_failed_ids = false;
         let show_failed_ids = self.show_failed_ids;
         let mut show_failed_ids_popup = self.show_failed_ids;
+        let mut mark_dirty = false;
+
+        // Extract all translations before locking state
+        let lang = self.lang;
+        let t_eda_export = self.t("EDA Library Export", "EDA 库导出");
+        let t_ready = self.t("Ready", "待导出");
+        let t_altium_kicad = self.t(
+            "Altium and KiCad export through export",
+            "通过 export 导出 Altium 和 KiCad 库",
+        );
+        let t_running = self.t("Running...", "运行中...");
+        let t_export_library = self.t("Export Library", "导出库");
+        let t_failed_ids = self.t("Failed IDs", "失败 ID");
+        let t_export_settings = self.t("Export Settings", "导出设置");
+        let t_defaults_saved = self.t("Defaults are saved automatically.", "设置会自动保存。");
+        let t_eda_target = self.t("EDA target:", "EDA 目标:");
+        let t_sch_stroke = self.t("SCH stroke color:", "原理图描边颜色:");
+        let t_sch_fill = self.t("SCH fill color:", "原理图填充颜色:");
+        let t_export_dir = self.t("Export directory:", "导出目录:");
+        let t_browse = self.t("Browse", "浏览");
+        let t_export_scope = self.t("Export scope:", "导出范围:");
+        let t_full = self.t("Full", "完整");
+        let t_symbol = self.t("Symbol", "符号");
+        let t_footprint = self.t("Footprint", "封装");
+        let t_library_name = self.t("Library name:", "库名称:");
+        let t_parallel_jobs = self.t("Parallel jobs:", "并行任务数:");
+        let t_merge = self.t("Merge", "合并");
+        let t_append = self.t("Append", "追加");
+        let t_continue_error = self.t("Continue On Error", "出错继续");
+        let t_force = self.t("Force", "强制");
+        let t_english_metadata = self.t("English metadata", "英文元数据");
 
         if let Ok(mut state) = self.state.lock() {
             let matched_count = state.matched.len();
             section(ui, |ui| {
-                section_header_inline(ui, self.t("EDA Library Export", "EDA 库导出"), |ui| {
-                    metric_pill(ui, self.t("Ready", "待导出"), matched_count, primary());
+                section_header_inline(ui, t_eda_export, |ui| {
+                    metric_pill(ui, t_ready, matched_count, primary());
                 });
                 ui.label(
-                    RichText::new(self.t(
-                        "Altium and KiCad export through export",
-                        "通过 export 导出 Altium 和 KiCad 库",
-                    ))
+                    RichText::new(t_altium_kicad)
                     .color(muted()),
                 );
                 ui.horizontal(|ui| {
                     if let Some(result) = &state.export_last_result {
-                        if render_export_metrics(ui, result, self.lang) {
+                        if render_export_metrics(ui, result, lang) {
                             toggle_failed_ids = true;
                         }
                     }
@@ -716,9 +841,9 @@ impl SeexApp {
                             .add_enabled(
                                 matched_count > 0 && !state.export_running,
                                 egui::Button::new(if state.export_running {
-                                    self.t("Running...", "运行中...")
+                                    t_running
                                 } else {
-                                    self.t("Export Library", "导出库")
+                                    t_export_library
                                 }),
                             )
                             .clicked()
@@ -739,8 +864,8 @@ impl SeexApp {
                                 continue_on_error: state.export_continue_on_error,
                                 lcsc_english: state.export_lcsc_english,
                                 force: state.export_force,
-                                schematic_stroke_color: self.schematic_stroke_color,
-                                schematic_fill_color: self.schematic_fill_color,
+                                schematic_stroke_color,
+                                schematic_fill_color,
                             });
                         }
                     });
@@ -748,14 +873,13 @@ impl SeexApp {
                 if let Some(result) = &state.export_last_result {
                     let failed = extract_failed_ids(result);
                     if show_failed_ids && !failed.is_empty() {
-                        let title = self.t("Failed IDs", "失败 ID");
                         let ids = failed.join(", ");
                         let viewport_center = ui
                             .ctx()
                             .input(|input| input.viewport().inner_rect)
                             .map(|rect| rect.center())
                             .unwrap_or_else(|| ui.max_rect().center());
-                        egui::Window::new(title)
+                        egui::Window::new(t_failed_ids)
                             .collapsible(false)
                             .resizable(true)
                             .default_width(420.0)
@@ -777,12 +901,12 @@ impl SeexApp {
             section(ui, |ui| {
                 section_header(
                     ui,
-                    self.t("Export Settings", "导出设置"),
-                    self.t("Defaults are saved automatically.", "设置会自动保存。"),
+                    t_export_settings,
+                    t_defaults_saved,
                 );
                 ui.add_space(8.0);
                 ui.horizontal(|ui| {
-                    fixed_label(ui, self.t("EDA target:", "EDA 目标:"));
+                    fixed_label(ui, t_eda_target);
                     let mut target = state.export_target.clone();
                     ComboBox::from_id_salt("target")
                         .selected_text(if target == "kicad" { "KiCad" } else { "Altium" })
@@ -795,7 +919,7 @@ impl SeexApp {
                         if state.export_target == "kicad" {
                             active_color_picker = None;
                         }
-                        save_config = true;
+                        mark_dirty = true;
                     }
                 });
 
@@ -803,29 +927,29 @@ impl SeexApp {
                     ui.horizontal(|ui| {
                         if color_setting(
                             ui,
-                            self.t("SCH stroke color:", "原理图描边颜色:"),
+                            t_sch_stroke,
                             &mut schematic_stroke_color,
                             &mut schematic_stroke_hex,
                             0,
                             &mut active_color_picker,
                         ) {
-                            save_config = true;
+                            mark_dirty = true;
                         }
                         if color_setting(
                             ui,
-                            self.t("SCH fill color:", "原理图填充颜色:"),
+                            t_sch_fill,
                             &mut schematic_fill_color,
                             &mut schematic_fill_hex,
                             1,
                             &mut active_color_picker,
                         ) {
-                            save_config = true;
+                            mark_dirty = true;
                         }
                     });
                 }
 
                 ui.horizontal(|ui| {
-                    fixed_label(ui, self.t("Export directory:", "导出目录:"));
+                    fixed_label(ui, t_export_dir);
                     if ui
                         .add(
                             TextEdit::singleline(&mut state.export_output_path)
@@ -835,46 +959,46 @@ impl SeexApp {
                     {
                         state.export_output_path =
                             monitor::normalize_path_string(&state.export_output_path);
-                        save_config = true;
+                        mark_dirty = true;
                     }
-                    if ui.button(self.t("Browse", "浏览")).clicked() {
+                    if ui.button(t_browse).clicked() {
                         open_pick_folder_dialog = true;
                     }
                 });
 
                 ui.horizontal(|ui| {
-                    fixed_label(ui, self.t("Export scope:", "导出范围:"));
+                    fixed_label(ui, t_export_scope);
                     if state.export_target == "kicad" {
                         mode_button(
                             ui,
                             &mut state.export_kicad_mode,
                             "full",
-                            self.t("Full", "完整"),
+                            t_full,
                         );
                         mode_button(
                             ui,
                             &mut state.export_kicad_mode,
                             "symbol",
-                            self.t("Symbol", "符号"),
+                            t_symbol,
                         );
                         mode_button(
                             ui,
                             &mut state.export_kicad_mode,
                             "footprint",
-                            self.t("Footprint", "封装"),
+                            t_footprint,
                         );
                         mode_button(ui, &mut state.export_kicad_mode, "3d", "3D");
                     } else {
-                        mode_button(ui, &mut state.export_mode, "full", self.t("Full", "完整"));
+                        mode_button(ui, &mut state.export_mode, "full", t_full);
                         mode_button(ui, &mut state.export_mode, "schlib", "SchLib");
                         mode_button(ui, &mut state.export_mode, "pcblib", "PcbLib");
                         mode_button(ui, &mut state.export_mode, "3d", "3D");
                     }
-                    save_config = true;
+                    mark_dirty = true;
                 });
 
                 ui.horizontal(|ui| {
-                    fixed_label(ui, self.t("Library name:", "库名称:"));
+                    fixed_label(ui, t_library_name);
                     if ui
                         .add_enabled(
                             state.export_target == "kicad" || state.export_merge,
@@ -883,17 +1007,17 @@ impl SeexApp {
                         )
                         .changed()
                     {
-                        save_config = true;
+                        mark_dirty = true;
                     }
                     ui.add_space(12.0);
-                    ui.label(RichText::new(self.t("Parallel jobs:", "并行任务数:")).color(muted()));
+                    ui.label(RichText::new(t_parallel_jobs).color(muted()));
                     let mut parallel = state.export_parallel as u32;
                     if ui
                         .add(egui::DragValue::new(&mut parallel).range(1..=64))
                         .changed()
                     {
                         state.set_export_parallel(parallel as usize);
-                        save_config = true;
+                        mark_dirty = true;
                     }
                 });
 
@@ -901,37 +1025,37 @@ impl SeexApp {
                     ui.horizontal(|ui| {
                         if state.export_target == "altium" && state.export_mode != "3d" {
                             let mut merge = state.export_merge;
-                            if toggle_button(ui, &mut merge, self.t("Merge", "合并")) {
+                            if toggle_button(ui, &mut merge, t_merge) {
                                 state.set_export_merge(merge);
-                                save_config = true;
+                                mark_dirty = true;
                             }
                             let mut append = state.export_append;
-                            if toggle_button(ui, &mut append, self.t("Append", "追加")) {
+                            if toggle_button(ui, &mut append, t_append) {
                                 state.set_export_append(append);
-                                save_config = true;
+                                mark_dirty = true;
                             }
                         }
                         let mut continue_on_error = state.export_continue_on_error;
                         if toggle_button(
                             ui,
                             &mut continue_on_error,
-                            self.t("Continue On Error", "出错继续"),
+                            t_continue_error,
                         ) {
                             state.set_export_continue_on_error(continue_on_error);
-                            save_config = true;
+                            mark_dirty = true;
                         }
                         let mut force = state.export_force;
-                        if toggle_button(ui, &mut force, self.t("Force", "强制")) {
+                        if toggle_button(ui, &mut force, t_force) {
                             state.set_export_force(force);
-                            save_config = true;
+                            mark_dirty = true;
                         }
                         let mut english = state.export_lcsc_english;
-                        if toggle_button(ui, &mut english, self.t("English metadata", "英文元数据"))
+                        if toggle_button(ui, &mut english, t_english_metadata)
                         {
                             state.set_export_lcsc_english(english);
                             state.bom_language =
                                 if english { "english" } else { "chinese" }.to_string();
-                            save_config = true;
+                            mark_dirty = true;
                         }
                     });
                 });
@@ -940,11 +1064,11 @@ impl SeexApp {
 
         if schematic_stroke_color != self.schematic_stroke_color {
             self.schematic_stroke_color = schematic_stroke_color;
-            save_config = true;
+            mark_dirty = true;
         }
         if schematic_fill_color != self.schematic_fill_color {
             self.schematic_fill_color = schematic_fill_color;
-            save_config = true;
+            mark_dirty = true;
         }
         self.schematic_stroke_hex = schematic_stroke_hex;
         self.schematic_fill_hex = schematic_fill_hex;
@@ -957,9 +1081,10 @@ impl SeexApp {
             self.start_file_dialog(FileDialogKind::PickFolder, ui.ctx());
         }
 
-        if save_config {
-            self.save_config();
+        if mark_dirty {
+            self.mark_config_dirty();
         }
+
         if let Some(req) = request {
             exporter::spawn_export(Arc::clone(&self.state), req);
         }
@@ -1024,7 +1149,7 @@ impl SeexApp {
                                             self.theme_preset = (*id).to_string();
                                             THEME_PRESET.store(theme_index(id), Ordering::Relaxed);
                                             install_style(ui.ctx());
-                                            self.save_config();
+                                            self.mark_config_dirty();
                                         }
                                     }
                                 });
@@ -1041,7 +1166,7 @@ impl SeexApp {
                     self.t("Show donation QR codes", "显示赞助二维码"),
                 ) {
                     self.show_donate = show_donate;
-                    self.save_config();
+                    self.mark_config_dirty();
                 }
             });
 
@@ -1166,11 +1291,11 @@ impl SeexApp {
     fn language_toggle(&mut self, ui: &mut Ui) {
         if top_bar_button(ui, 72.0, "EN", self.lang == Lang::En).clicked() {
             self.lang = Lang::En;
-            self.save_config();
+            self.mark_config_dirty();
         }
         if top_bar_button(ui, 72.0, "中文", self.lang == Lang::Zh).clicked() {
             self.lang = Lang::Zh;
-            self.save_config();
+            self.mark_config_dirty();
         }
     }
 
@@ -1231,8 +1356,16 @@ impl SeexApp {
 impl eframe::App for SeexApp {
     fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
         self.poll_file_dialog();
+        self.process_config_save();
         self.sync_system_theme(ui.ctx());
-        ui.ctx().request_repaint_after(Duration::from_millis(250));
+
+        // Reduce repaint frequency - only when needed
+        if self.toast_state.show_until.is_some() || self.file_dialog_running || self.config_dirty {
+            ui.ctx().request_repaint_after(Duration::from_millis(100));
+        } else {
+            ui.ctx().request_repaint_after(Duration::from_millis(500));
+        }
+
         ui.painter().rect_filled(ui.max_rect(), 0, app_bg());
 
         egui::Panel::top("top_bar")
@@ -1276,6 +1409,9 @@ impl eframe::App for SeexApp {
                         ui.add_space(12.0);
                     });
             });
+
+        // Render toast notifications
+        self.render_toast(ui.ctx());
     }
 }
 
