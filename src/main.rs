@@ -552,7 +552,8 @@ impl SeexApp {
             );
             ui.add_space(8.0);
             let available_width = ui.available_width();
-            ScrollArea::vertical()
+            let import_box = ScrollArea::vertical()
+                .id_salt("manual_import_box")
                 .max_height(92.0)
                 .min_scrolled_height(92.0)
                 .show(ui, |ui| {
@@ -563,6 +564,7 @@ impl SeexApp {
                             .hint_text(input_hint),
                     );
                 });
+            contain_wheel(ui, &import_box);
             ui.add_space(6.0);
             ui.horizontal_wrapped(|ui| {
                 if ui.button(import_label).clicked() {
@@ -687,7 +689,8 @@ impl SeexApp {
             }
 
             ui.add_space(8.0);
-            ScrollArea::vertical()
+            let matched_list = ScrollArea::vertical()
+                .id_salt("matched_list")
                 .max_height(list_height(ui, 0.24, 3, 54.0))
                 .min_scrolled_height(list_height(ui, 0.24, 3, 54.0))
                 .show(ui, |ui| {
@@ -714,6 +717,7 @@ impl SeexApp {
                         }
                     }
                 });
+            contain_wheel(ui, &matched_list);
         });
     }
 
@@ -735,7 +739,8 @@ impl SeexApp {
             }
 
             ui.add_space(8.0);
-            ScrollArea::vertical()
+            let history_list = ScrollArea::vertical()
+                .id_salt("history_list")
                 .max_height(list_height(ui, 0.55, 6, 52.0))
                 .min_scrolled_height(list_height(ui, 0.55, 6, 52.0))
                 .show(ui, |ui| {
@@ -763,6 +768,7 @@ impl SeexApp {
                         }
                     }
                 });
+            contain_wheel(ui, &history_list);
         });
     }
 
@@ -1664,6 +1670,18 @@ fn list_height(ui: &Ui, viewport_fraction: f32, minimum_rows: usize, row_height:
     target_height
         .max(minimum_height)
         .min((viewport_height * 0.72).max(minimum_height))
+}
+
+/// Keep the mouse wheel inside a list that lives on a scrollable page.
+///
+/// egui consumes the wheel only while an area can still move, so once a nested list reaches its end
+/// the leftover delta scrolls the page behind it and both move at once. Swallowing whatever is left
+/// under the pointer makes the list behave like a list instead of dragging the page along with it.
+fn contain_wheel(ui: &Ui, list: &egui::containers::scroll_area::ScrollAreaOutput<impl Sized>) {
+    let scrollable = list.content_size.y > list.inner_rect.height() + 0.5;
+    if scrollable && ui.rect_contains_pointer(list.inner_rect) {
+        ui.input_mut(|input| input.smooth_scroll_delta = Vec2::ZERO);
+    }
 }
 
 fn section_header(ui: &mut Ui, title: &str, desc: &str) {
