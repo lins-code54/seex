@@ -1830,6 +1830,27 @@ mod tests {
     }
 
     #[test]
+    fn places_a_real_rotated_model_on_its_pads() {
+        // C668205 (SOP-8_L5.0-W4.0) stores its model at 90 degrees. Rendering the exported KiCad
+        // footprint with `kicad-cli pcb render` shows the leads only reaching the pads with a 270
+        // degree rotation, so that is what the 3D body (and the model table) has to carry.
+        let payload: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/lceda_footprint_c668205.json"
+        ))
+        .unwrap();
+        let library = build_pcblib_from_payload(
+            &payload,
+            "SOP-8",
+            Some(b"ISO-10303-21;END-ISO-10303-21;"),
+        )
+        .unwrap();
+        let body = &library.components[0].bodies[0];
+
+        assert_eq!(body.model_3d_rot_z, 270.0);
+        assert_eq!(library.models[0].rotation_z, 270.0);
+    }
+
+    #[test]
     fn binds_custom_pad_mask_expansion_to_the_copper_region() {
         let payload: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/lceda_footprint_c29073231.json"

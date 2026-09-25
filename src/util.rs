@@ -9,6 +9,16 @@ use serde_json::Value;
 /// visual rotation therefore has the opposite sign. Verified with KiCad renders: a footprint
 /// whose model is stored with 90 degrees only lands on its pads with a 270 degree rotation, and
 /// a stored 0 stays 0.
+///
+/// The translation is deliberately left at zero: EasyEDA already stores the model where it
+/// belongs, and the offsets carried in `model_3d.transform` / `c_origin` move footprints that
+/// render correctly today (C144198, C668205, C725790) off the pads by about a millimetre.
+///
+/// Only the EasyEDA angle feeds this conversion. Real Altium libraries store the same number in
+/// both `MODEL.3D.ROTZ` and the model table entry, which is what the exporter mirrors; the
+/// direction cannot be checked without Altium itself, and for every package whose pad array is
+/// symmetric about the X axis (i.e. all chip packages) a 180 degree error is invisible in the
+/// 3D view.
 pub fn model_rotation_z(easyeda_degrees: f64) -> f64 {
     if !easyeda_degrees.is_finite() {
         return 0.0;
