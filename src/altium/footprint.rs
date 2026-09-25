@@ -412,6 +412,8 @@ pub fn build_pcblib_from_payload(
     let mut pad_shape_regions = Vec::new();
     let mut custom_copper_regions = Vec::new();
     let mut custom_mask_regions = Vec::new();
+    // Solder mask expansions are recorded per custom pad copper region, because that is
+    // the object Altium reads them from (see `custom_mask_expansions` usage below).
     let mut custom_mask_expansions = Vec::new();
 
     for pad_raw in pads {
@@ -486,14 +488,14 @@ pub fn build_pcblib_from_payload(
                     is_keepout: false,
                     additional_params: pad_shape_region_params(copper_layer_name),
                 });
+                // A polygon pad has no real pad shape, so its mask opening is described by
+                // the ExtendedPrimitiveInformation entry emitted for this copper region.
+                custom_mask_expansions.push(
+                    pad_raw
+                        .custom_mask_expansion_units
+                        .unwrap_or(CUSTOM_PAD_HOTSPOT_UNITS),
+                );
             }
-            let mask_expansion = if needs_custom_mask {
-                pad_raw
-                    .custom_mask_expansion_units
-                    .unwrap_or(CUSTOM_PAD_HOTSPOT_UNITS)
-            } else {
-                0.0
-            };
             if needs_custom_mask {
                 for (mask_layer, v7_layer_name) in mask_region_layers(pad_raw.layer_code, hole_mm) {
                     custom_mask_regions.push(PcbRegion {
@@ -509,7 +511,6 @@ pub fn build_pcblib_from_payload(
                         is_keepout: false,
                         additional_params: pad_shape_region_params(v7_layer_name),
                     });
-                    custom_mask_expansions.push(mask_expansion);
                 }
             }
         }
@@ -597,12 +598,11 @@ pub fn build_pcblib_from_payload(
             });
         }
     }
-    let mask_region_start = component.pads.len()
+    let custom_copper_region_start = component.pads.len()
         + component.tracks.len()
         + component.arcs.len()
         + component.regions.len()
-        + pad_shape_regions.len()
-        + custom_copper_regions.len();
+        + pad_shape_regions.len();
     component.regions.extend(pad_shape_regions);
     component.regions.extend(custom_copper_regions);
     component.regions.extend(custom_mask_regions);
@@ -610,7 +610,13 @@ pub fn build_pcblib_from_payload(
         component
             .extended_primitive_information
             .push(PcbExtendedPrimitiveInfo {
-                primitive_index: mask_region_start + offset,
+                // Altium derives a solder mask opening from extended primitive information
+                // only when it is attached to a copper object: its own libraries place the
+                // custom pad shape region on the copper layer and mark it with `TYPE=Mask`
+                // plus the mask expansion. Pointing this entry at the mask layer region
+                // instead leaves every polygon pad without a usable mask opening, because
+                // that region only reproduces the copper outline with no expansion.
+                primitive_index: custom_copper_region_start + offset,
                 object_name: "Region".to_string(),
                 params: vec![
                     ("TYPE".to_string(), "Mask".to_string()),
@@ -1790,6 +1796,64 @@ mod tests {
     }
 
     #[test]
+    fn binds_custom_pad_mask_expansion_to_the_copper_region() {
+        let payload: serde_json::Value = serde_json::from_str(include_str!(
+            "../../tests/fixtures/lceda_footprint_c29073231.json"
+        ))
+        .unwrap();
+        let library =
+            build_pcblib_from_payload(&payload, "QFN-19_L5.0-W3.0_CD4583GQVE", None).unwrap();
+        let component = &library.components[0];
+
+        // C29073231 has five irregular (polygon) pads: 1, 6, 7, 9 and 15.
+        let copper_regions: Vec<&crate::altium::pcblib::PcbRegion> = component
+            .regions
+            .iter()
+            .filter(|region| region.layer == LAYER_TOP)
+            .collect();
+        let mask_regions: Vec<&crate::altium::pcblib::PcbRegion> = component
+            .regions
+            .iter()
+            .filter(|region| region.layer == LAYER_TOP_SOLDER)
+            .collect();
+        assert_eq!(copper_regions.len(), 5);
+        assert_eq!(mask_regions.len(), 5);
+
+        let region_primitive_start =
+            component.pads.len() + component.tracks.len() + component.arcs.len();
+        assert_eq!(
+            component.extended_primitive_information.len(),
+            copper_regions.len()
+        );
+        for info in &component.extended_primitive_information {
+            let region = &component.regions[info.primitive_index - region_primitive_start];
+            assert_eq!(
+                region.layer, LAYER_TOP,
+                "the mask entry must reference the pad copper region, not its mask region"
+            );
+            assert_eq!(info.object_name, "Region");
+            assert!(
+                info.params
+                    .contains(&("TYPE".to_string(), "Mask".to_string()))
+            );
+            assert!(info.params.contains(&(
+                "SOLDERMASKEXPANSION_MANUAL".to_string(),
+                "1.968mil".to_string()
+            )));
+            assert!(
+                info.params
+                    .contains(&("PASTEMASKEXPANSIONMODE".to_string(), "None".to_string()))
+            );
+            // Every irregular pad keeps an explicit opening region as a fallback.
+            assert!(
+                mask_regions
+                    .iter()
+                    .any(|mask| mask.outline == region.outline)
+            );
+        }
+    }
+
+    #[test]
     fn custom_pad_mask_regions_use_solder_layers() {
         assert_eq!(
             mask_region_layers(1, 0.0),
@@ -1865,6 +1929,10 @@ mod tests {
                 .any(|region| region.layer == LAYER_TOP)
         );
         assert_eq!(component.extended_primitive_information.len(), 1);
+        assert_eq!(
+            component.extended_primitive_information[0].primitive_index,
+            component.pads.len() + component.tracks.len() + component.arcs.len() + 1
+        );
     }
 
     #[test]
@@ -1907,7 +1975,18 @@ mod tests {
                 .filter(|region| region.layer == LAYER_MECHANICAL_9)
                 .all(|region| region.outline.len() == ROUNDED_RECT_CORNER_SEGMENTS * 4 + 6)
         );
-        assert_eq!(component.extended_primitive_information.len(), 2);
+        // These polygon pads are plain rectangles, so they become real rounded rectangle
+        // pads that already carry the solder mask expansion themselves: no copper region
+        // (and therefore no mask entry) is needed for them.
+        assert_eq!(component.extended_primitive_information.len(), 0);
+        assert!(
+            component
+                .regions
+                .iter()
+                .filter(|region| region.layer == LAYER_TOP_SOLDER)
+                .count()
+                == 2
+        );
     }
 
     #[test]
