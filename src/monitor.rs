@@ -158,16 +158,30 @@ impl MonitorState {
         }
 
         if !self.initialized {
-            self.last_content = trimmed;
-            self.initialized = true;
-            self.add_debug_log("Listener initialized".to_string());
-            return false;
+            // On initialization, check if content has IDs we care about
+            let extracted_ids = extract_lcsc_ids(&trimmed);
+            if !extracted_ids.is_empty() {
+                // Initialize and process this content since it has valid IDs
+                self.last_content = trimmed.clone();
+                self.initialized = true;
+                self.add_debug_log("Listener initialized with valid content".to_string());
+                self.record_import(trimmed, "Initial content");
+                return true;
+            } else {
+                // Just initialize without processing
+                self.last_content = trimmed;
+                self.initialized = true;
+                self.add_debug_log("Listener initialized".to_string());
+                return false;
+            }
         }
 
+        // Check if content has changed
         if trimmed == self.last_content {
             return false;
         }
 
+        // Update last_content and process
         self.last_content = trimmed.clone();
         self.record_import(trimmed, "New content");
         true
@@ -372,23 +386,37 @@ impl MonitorHandle {
         let poll_thread = thread::spawn(move || {
             thread::sleep(Duration::from_millis(500));
             let mut clipboard: Option<Clipboard> = None;
+            let mut consecutive_errors = 0u32;
 
             while !stop_poll.load(Ordering::Relaxed) {
                 thread::sleep(Duration::from_millis(300));
 
                 if clipboard.is_none() {
                     clipboard = Clipboard::new().ok();
+                    if clipboard.is_none() {
+                        consecutive_errors += 1;
+                        // Exponential backoff on repeated failures
+                        if consecutive_errors > 3 {
+                            thread::sleep(Duration::from_millis(1000));
+                        }
+                        continue;
+                    }
                 }
 
                 if let Some(ref mut clip) = clipboard {
                     match clip.get_text() {
                         Ok(content) => {
+                            consecutive_errors = 0;
                             if let Ok(mut s) = state_poll.lock() {
                                 s.process_clipboard_change(content);
                             }
                         }
                         Err(_) => {
-                            clipboard = None;
+                            consecutive_errors += 1;
+                            // Only reset clipboard handle after multiple consecutive errors
+                            if consecutive_errors > 5 {
+                                clipboard = None;
+                            }
                         }
                     }
                 }
