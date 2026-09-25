@@ -9,7 +9,7 @@ use super::pcblib::{
     PcbRegion, PcbTrack, stable_guid,
 };
 use crate::error::{AppError, Result};
-use crate::util::{model_rotation_z, nested_string, sanitize_filename, value_to_string};
+use crate::util::{altium_model_rotation_z, nested_string, sanitize_filename, value_to_string};
 
 const FOOTPRINT_UNIT_TO_MM: f64 = 0.0254;
 const RAW_PER_MIL: f64 = 10_000.0;
@@ -658,8 +658,8 @@ pub fn build_pcblib_from_payload(
             model_3d_rot_x: 0.0,
             model_3d_rot_y: 0.0,
             // Without this the embedded STEP lands 90 degrees off on every footprint whose
-            // EasyEDA model is stored rotated (see `model_rotation_z`).
-            model_3d_rot_z: model_rotation_z(model.rotation_z),
+            // EasyEDA model is stored rotated (see `altium_model_rotation_z`).
+            model_3d_rot_z: altium_model_rotation_z(model.rotation_z),
             model_3d_dz_raw: 0,
             model_checksum: 0,
             model_name: model_name.clone(),
@@ -680,7 +680,8 @@ pub fn build_pcblib_from_payload(
             model_source: "Undefined".to_string(),
             rotation_x: 0.0,
             rotation_y: 0.0,
-            rotation_z: model_rotation_z(model.rotation_z),
+            // Altium keeps the model table entry and the body's MODEL.3D.ROTZ in sync.
+            rotation_z: altium_model_rotation_z(model.rotation_z),
             dz_raw: 0,
             checksum: 0,
             step_data: step_data.to_vec(),
@@ -1810,10 +1811,10 @@ mod tests {
                 .unwrap();
         let body = &library.components[0].bodies[0];
 
-        // EasyEDA stores the angle for a frame whose +Y points down: a stored 90 becomes a
-        // 270 degree rotation for the exported 3D body.
-        assert_eq!(body.model_3d_rot_z, 270.0);
-        assert_eq!(library.models[0].rotation_z, 270.0);
+        // EasyEDA stores 90 degrees; Altium's footprint frame is the Y mirror of EasyEDA's, so the
+        // body keeps that angle (KiCad, whose frame matches EasyEDA's, gets 270 instead).
+        assert_eq!(body.model_3d_rot_z, 90.0);
+        assert_eq!(library.models[0].rotation_z, 90.0);
     }
 
     #[test]
@@ -1833,21 +1834,18 @@ mod tests {
     fn places_a_real_rotated_model_on_its_pads() {
         // C668205 (SOP-8_L5.0-W4.0) stores its model at 90 degrees. Rendering the exported KiCad
         // footprint with `kicad-cli pcb render` shows the leads only reaching the pads with a 270
-        // degree rotation, so that is what the 3D body (and the model table) has to carry.
+        // degree rotation in KiCad's frame, which is the 90 degrees Altium's mirrored frame needs.
         let payload: serde_json::Value = serde_json::from_str(include_str!(
             "../../tests/fixtures/lceda_footprint_c668205.json"
         ))
         .unwrap();
-        let library = build_pcblib_from_payload(
-            &payload,
-            "SOP-8",
-            Some(b"ISO-10303-21;END-ISO-10303-21;"),
-        )
-        .unwrap();
+        let library =
+            build_pcblib_from_payload(&payload, "SOP-8", Some(b"ISO-10303-21;END-ISO-10303-21;"))
+                .unwrap();
         let body = &library.components[0].bodies[0];
 
-        assert_eq!(body.model_3d_rot_z, 270.0);
-        assert_eq!(library.models[0].rotation_z, 270.0);
+        assert_eq!(body.model_3d_rot_z, 90.0);
+        assert_eq!(library.models[0].rotation_z, 90.0);
     }
 
     #[test]
