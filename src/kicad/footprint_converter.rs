@@ -443,8 +443,9 @@ pub fn convert_footprint(
 
         ki_footprint.model_3d = Some(kicad::Ki3dModel {
             path: model_path,
-            // EasyEDA already stores the model where it belongs: only its rotation is missing
-            // from the exported footprint, so no translation is needed here.
+            // The model's own coordinates already place it: its rotation is the only thing the
+            // exported footprint adds, and the STEP itself is lifted onto the board plane when it
+            // is written (see `crate::step_model`).
             offset: (0.0, 0.0, 0.0),
             scale: (1.0, 1.0, 1.0),
             rotate: (

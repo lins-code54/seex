@@ -14,6 +14,7 @@ mod lceda;
 mod lcsc;
 mod metadata;
 mod monitor;
+mod step_model;
 mod util;
 
 use std::path::PathBuf;

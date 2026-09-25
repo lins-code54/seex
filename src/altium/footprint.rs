@@ -635,6 +635,9 @@ pub fn build_pcblib_from_payload(
     if let (Some(model), Some(step_data), Some(extents)) =
         (model_3d.as_ref(), step_bytes, body_extents)
     {
+        // LCEDA does not always author a model with its underside on the board plane, so the
+        // embedded geometry is moved there (see `crate::step_model`).
+        let step_data = crate::step_model::place_step_on_board(step_data);
         let model_id = stable_guid(&format!("{}|{}", component_name, model.uri));
         let model_name = choose_step_model_name(component_name, &model.title);
         component.bodies.push(PcbComponentBody {
@@ -684,7 +687,7 @@ pub fn build_pcblib_from_payload(
             rotation_z: altium_model_rotation_z(model.rotation_z),
             dz_raw: 0,
             checksum: 0,
-            step_data: step_data.to_vec(),
+            step_data,
         });
     }
     library.components.push(component);
@@ -1934,6 +1937,31 @@ mod tests {
         let component = &library.components[0];
         assert_eq!(library.models.len(), 0);
         assert_eq!(component.bodies.len(), 0);
+    }
+
+    #[test]
+    fn embeds_the_step_model_resting_on_the_board_plane() {
+        // A model centred on Z, like C2904739 (SOP-16) and C9864 (ESOP-8), whose geometry sinks
+        // about 0.8 mm into the board when it is embedded untouched.
+        let mut step = String::from(
+            "ISO-10303-21;\nDATA;\n#900 = CARTESIAN_POINT ( 'NONE',  ( 0.0, 0.0, 1.2 ) ) ;\n",
+        );
+        for index in 0..40 {
+            step.push_str(&format!(
+                "#{index} = CARTESIAN_POINT ( 'NONE',  ( 0.0, 0.0, -0.83 ) ) ;\n"
+            ));
+        }
+        step.push_str("ENDSEC;\nEND-ISO-10303-21;\n");
+        let payload = json!({"result": {"dataStr": r#"["DOCTYPE","FOOTPRINT","1.8"]
+["PAD","e1",0,"",1,"1",0,0,0,null,["RECT",20,30,0],[],0,0,0,1]"#,
+            "model_3d": {"title":"BODY-H1.2", "uri":"modeluuid", "transform":"192.913,236.22,0,0,0,0,0,0,0"}}});
+
+        let library = build_pcblib_from_payload(&payload, "ESOP-8", Some(step.as_bytes())).unwrap();
+        let embedded = String::from_utf8(library.models[0].step_data.clone()).unwrap();
+
+        assert!(!embedded.contains("-0.83"));
+        assert!(embedded.contains("0.000000000"));
+        assert!(embedded.contains("2.030000000"));
     }
 
     #[test]

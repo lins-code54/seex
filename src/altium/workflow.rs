@@ -45,7 +45,8 @@ pub async fn download_step(
 
     let model_uuid = client.get_model_uuid(item).await?;
     let content = client.download_step_bytes(&model_uuid).await?;
-    fs::write(&out_file, content)?;
+    // The STEP is stored in LCEDA's own frame, which does not always rest on the board plane.
+    fs::write(&out_file, crate::step_model::place_step_on_board(&content))?;
     Ok(out_file)
 }
 
@@ -394,7 +395,7 @@ pub async fn export_bundle(
         let path = out_dir.join(item.choose_step_filename());
         if force || !path.exists() {
             let content = client.download_step_bytes(&model_uuid).await?;
-            fs::write(&path, content)?;
+            fs::write(&path, crate::step_model::place_step_on_board(&content))?;
         }
         step_file = Some(path.clone());
         exported.insert("step".to_string(), path);
