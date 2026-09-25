@@ -1025,33 +1025,42 @@ impl SeexApp {
                     ui.horizontal(|ui| {
                         if state.export_target == "altium" && state.export_mode != "3d" {
                             let mut merge = state.export_merge;
-                            if toggle_button(ui, &mut merge, t_merge) {
+                            let (changed, resp) = toggle_button(ui, &mut merge, t_merge);
+                            resp.on_hover_text("合并：将所有元件输出到同一个库文件中\nMerge: export all components into a single library file");
+                            if changed {
                                 state.set_export_merge(merge);
                                 mark_dirty = true;
                             }
                             let mut append = state.export_append;
-                            if toggle_button(ui, &mut append, t_append) {
+                            let (changed, resp) = toggle_button(ui, &mut append, t_append);
+                            resp.on_hover_text("追加：向已有库文件追加元件，而不是覆盖\nAppend: add components to an existing library instead of overwriting it");
+                            if changed {
                                 state.set_export_append(append);
                                 mark_dirty = true;
                             }
                         }
                         let mut continue_on_error = state.export_continue_on_error;
-                        if toggle_button(
+                        let (changed, resp) = toggle_button(
                             ui,
                             &mut continue_on_error,
                             t_continue_error,
-                        ) {
+                        );
+                        resp.on_hover_text("出错继续：单个元件导出失败时跳过并继续，不中断整个导出\nContinue On Error: skip failed components and keep exporting instead of stopping on first error");
+                        if changed {
                             state.set_export_continue_on_error(continue_on_error);
                             mark_dirty = true;
                         }
                         let mut force = state.export_force;
-                        if toggle_button(ui, &mut force, t_force) {
+                        let (changed, resp) = toggle_button(ui, &mut force, t_force);
+                        resp.on_hover_text("强制：即使元件已存在也强制重新导出，覆盖现有数据\nForce: re-export and overwrite even if the component already exists in the library");
+                        if changed {
                             state.set_export_force(force);
                             mark_dirty = true;
                         }
                         let mut english = state.export_lcsc_english;
-                        if toggle_button(ui, &mut english, t_english_metadata)
-                        {
+                        let (changed, resp) = toggle_button(ui, &mut english, t_english_metadata);
+                        resp.on_hover_text("英文元数据：使用英文填写元件属性字段（如描述、封装等）\nEnglish metadata: fill component property fields (description, package, etc.) in English");
+                        if changed {
                             state.set_export_lcsc_english(english);
                             state.bom_language =
                                 if english { "english" } else { "chinese" }.to_string();
@@ -1160,11 +1169,12 @@ impl SeexApp {
                 ui.add_space(4.0);
 
                 let mut show_donate = self.show_donate;
-                if toggle_button(
+                let (changed, _) = toggle_button(
                     ui,
                     &mut show_donate,
                     self.t("Show donation QR codes", "显示赞助二维码"),
-                ) {
+                );
+                if changed {
                     self.show_donate = show_donate;
                     self.mark_config_dirty();
                 }
@@ -1590,12 +1600,13 @@ fn mode_button(ui: &mut Ui, mode: &mut String, value: &str, label: &str) {
     }
 }
 
-fn toggle_button(ui: &mut Ui, value: &mut bool, label: &str) -> bool {
-    if ui.selectable_label(*value, label).clicked() {
+fn toggle_button(ui: &mut Ui, value: &mut bool, label: &str) -> (bool, egui::Response) {
+    let resp = ui.selectable_label(*value, label);
+    if resp.clicked() {
         *value = !*value;
-        true
+        (true, resp)
     } else {
-        false
+        (false, resp)
     }
 }
 
