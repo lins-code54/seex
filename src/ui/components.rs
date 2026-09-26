@@ -27,7 +27,7 @@ pub fn button(
         .justify_center()
         .h(px(40.0))
         .px(px(16.0))
-        .rounded(px(2.0))
+        .rounded(px(theme::RADIUS_SM))
         .bg(theme::field_bg())
         .border(px(1.0))
         .border_color(theme::border())
@@ -58,7 +58,7 @@ pub fn small_button(
         .justify_center()
         .h(px(28.0))
         .px(px(10.0))
-        .rounded(px(2.0))
+        .rounded(px(theme::RADIUS_SM))
         .bg(theme::field_bg())
         .border(px(1.0))
         .border_color(theme::border())
@@ -89,7 +89,7 @@ pub fn selectable(
         .justify_center()
         .h(px(40.0))
         .px(px(16.0))
-        .rounded(px(2.0))
+        .rounded(px(theme::RADIUS_SM))
         .bg(background)
         .border(px(1.0))
         .border_color(theme::border())
@@ -126,7 +126,7 @@ pub fn theme_button(
         .items_center()
         .justify_center()
         .h(px(38.0))
-        .rounded(px(2.0))
+        .rounded(px(theme::RADIUS_SM))
         .bg(background)
         .border(px(1.0))
         .border_color(theme::border())
@@ -170,7 +170,7 @@ pub fn top_bar_button(
         .justify_center()
         .w(px(width))
         .h(px(44.0))
-        .rounded(px(7.0))
+        .rounded(px(theme::RADIUS_MD))
         .bg(background)
         .hover(move |style| {
             if selected {
@@ -207,6 +207,7 @@ fn panel(min_height: f32, body: impl IntoElement) -> impl IntoElement {
         .bg(theme::surface())
         .border(px(1.0))
         .border_color(theme::border())
+        .rounded(px(theme::RADIUS_LG))
         .child(body);
 
     if min_height > 0.0 {
@@ -231,6 +232,7 @@ pub fn row_frame(body: impl IntoElement) -> impl IntoElement {
         .bg(theme::row_bg())
         .border(px(1.0))
         .border_color(theme::subtle_border())
+        .rounded(px(theme::RADIUS_SM))
         .child(body)
 }
 
@@ -356,33 +358,26 @@ pub fn font_slot_row(
         ))
 }
 
-/// The tooltip body. It is drawn by the kit outside this view's tree, so it
-/// carries the configured face itself instead of inheriting the system one.
-struct Hint {
-    text: SharedString,
-}
-
-impl Render for Hint {
-    fn render(&mut self, _window: &mut Window, _cx: &mut Context<Self>) -> impl IntoElement {
-        div()
-            .px(px(10.0))
-            .py(px(6.0))
-            .rounded(px(4.0))
-            .bg(theme::surface())
-            .border(px(1.0))
-            .border_color(theme::border())
-            .font(crate::ui::fonts::active())
-            .text_size(px(theme::scaled_font(20.0)))
-            .text_color(theme::text_color())
-            .child(self.text.clone())
-    }
-}
-
-/// Attaches a tooltip. The text comes from `locale::t`, so a hover label is
-/// written in one language instead of the old hand-written bilingual pairs.
-pub fn hint(element: Stateful<Div>, text: impl Into<SharedString>) -> Stateful<Div> {
+/// Attaches a hover hint. Rather than a floating tooltip — which landed on top
+/// of the buttons around it — the text is parked on the view and shown in the
+/// status bar, where it cannot cover anything.
+pub fn hint(
+    element: Stateful<Div>,
+    text: impl Into<SharedString>,
+    area: crate::ui::app::HintArea,
+    cx: &mut Context<crate::ui::app::SeexUi>,
+) -> Stateful<Div> {
     let text: SharedString = text.into();
-    element.tooltip(move |_window, cx| cx.new(|_| Hint { text: text.clone() }).into())
+    element.on_hover(cx.listener(move |this, hovered: &bool, _window, cx| {
+        if *hovered {
+            this.hover_hint = Some((area, text.clone()));
+        } else if matches!(&this.hover_hint, Some((_, current)) if current == &text) {
+            // Only clear our own hint: the pointer may already be on the next
+            // button, which has set its own by now.
+            this.hover_hint = None;
+        }
+        cx.notify();
+    }))
 }
 
 /// A single family in the picker list.
@@ -413,6 +408,7 @@ pub fn font_row(
         })
         .border(px(1.0))
         .border_color(theme::subtle_border())
+        .rounded(px(theme::RADIUS_SM))
         .cursor_pointer()
         .hover(move |style| {
             if selected {
@@ -441,19 +437,24 @@ pub fn font_row(
         .on_click(on_click)
 }
 
-/// The status-bar notice: the old floating toast covered the page, so it shares
-/// the status bar, which always has room.
-pub fn status_notice(label: impl Into<SharedString>, color: Rgba) -> impl IntoElement {
+/// The single style for everything the status bar has to say — a running notice
+/// or a hover hint — so the two read as the same kind of thing: a filled box in
+/// the accent colour, with white text.
+pub fn status_box(text: impl Into<SharedString>, accent: Rgba) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .h(px(32.0))
+        .h(px(34.0))
         .px(px(12.0))
-        .rounded(px(7.0))
-        .bg(color)
-        .text_size(px(theme::scaled_font(22.0)))
+        .rounded(px(6.0))
+        .bg(accent)
+        .border(px(1.0))
+        .border_color(accent)
+        .overflow_hidden()
+        .text_ellipsis()
+        .text_size(px(theme::scaled_font(23.0)))
         .text_color(theme::white())
-        .child(label.into())
+        .child(text.into())
 }
 
 /// A wide, count-bearing pill that heads an action row.
@@ -485,34 +486,43 @@ pub fn pill_text(text: impl Into<SharedString>, color: Rgba) -> impl IntoElement
         .child(text.into())
 }
 
-/// A 34px progress bar in the theme's primary colour with its message beside it.
+/// A progress bar in the theme's primary colour, with its message written
+/// inside the track the way egui drew it.
 pub fn progress_bar(value: f32, message: impl Into<SharedString>) -> impl IntoElement {
     let value = value.clamp(0.0, 1.0);
-    let filled = (200.0 * value).max(0.0);
+    let message: SharedString = message.into();
     div()
-        .flex()
-        .flex_row()
-        .items_center()
-        .gap(px(10.0))
+        .relative()
+        .flex_1()
+        .min_w(px(200.0))
+        .h(px(34.0))
+        .rounded(px(theme::RADIUS_SM))
+        .bg(theme::field_bg())
+        .border(px(1.0))
+        .border_color(theme::border())
+        .overflow_hidden()
         .child(
             div()
-                .w(px(200.0))
-                .h(px(12.0))
-                .rounded(px(6.0))
-                .bg(theme::border())
-                .child(
-                    div()
-                        .h_full()
-                        .w(px(filled))
-                        .rounded(px(6.0))
-                        .bg(theme::primary()),
-                ),
+                .absolute()
+                .left_0()
+                .top_0()
+                .h_full()
+                .w(relative(value))
+                .bg(theme::progress_fill()),
         )
         .child(
             div()
-                .text_size(px(theme::scaled_font(24.0)))
+                .absolute()
+                .left_0()
+                .top_0()
+                .w_full()
+                .h_full()
+                .flex()
+                .items_center()
+                .justify_center()
+                .text_size(px(theme::scaled_font(22.0)))
                 .text_color(theme::text_color())
-                .child(message.into()),
+                .child(message),
         )
 }
 

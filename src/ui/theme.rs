@@ -15,6 +15,12 @@ pub const FONT_SCALE_FROM_CURRENT: f32 = 0.75;
 static DARK_MODE: AtomicBool = AtomicBool::new(false);
 static THEME_PRESET: AtomicU8 = AtomicU8::new(0);
 
+/// Corner radii. Every rectangle in the window - controls, rows and cards -
+/// uses one of these, in the rounded style Windows 11 and macOS share.
+pub const RADIUS_SM: f32 = 6.0;
+pub const RADIUS_MD: f32 = 8.0;
+pub const RADIUS_LG: f32 = 10.0;
+
 pub fn set_dark_mode(dark: bool) {
     DARK_MODE.store(dark, Ordering::Relaxed);
 }
@@ -243,6 +249,16 @@ pub fn top_bar_hover() -> Rgba {
 pub fn chip_bg(color: Rgba) -> Rgba {
     let alpha = if is_dark_mode() { 42.0 / 255.0 } else { 24.0 / 255.0 };
     Rgba { a: alpha, ..color }
+}
+
+/// The filled part of a progress bar: strong enough to read as progress, light
+/// enough that the message printed over it stays legible.
+pub fn progress_fill() -> Rgba {
+    let alpha = if is_dark_mode() { 0.55 } else { 0.40 };
+    Rgba {
+        a: alpha,
+        ..primary()
+    }
 }
 
 pub fn white() -> Rgba {

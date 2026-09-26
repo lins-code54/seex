@@ -19,14 +19,6 @@ pub fn remember(font: Font) {
     }
 }
 
-pub fn active() -> Font {
-    ACTIVE
-        .lock()
-        .ok()
-        .and_then(|active| active.clone())
-        .unwrap_or_default()
-}
-
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum FontSlot {
     Latin,
@@ -76,7 +68,7 @@ pub fn choices(installed: &[String], slot: FontSlot, current: Option<&str>) -> V
     };
 
     let mut ordered: Vec<String> = Vec::with_capacity(installed.len());
-    let mut push = |name: &str, ordered: &mut Vec<String>| {
+    let push = |name: &str, ordered: &mut Vec<String>| {
         let present = installed.iter().any(|font| font == name);
         let already = ordered.iter().any(|existing| existing == name);
         if present && !already {

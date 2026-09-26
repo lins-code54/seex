@@ -92,6 +92,14 @@ pub struct ToastState {
     pub show_until: Option<Instant>,
 }
 
+/// Where a hover hint is shown. Hints that explain a row of controls are drawn
+/// under that row; the rest fall back to the status bar.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum HintArea {
+    StatusBar,
+    ExportToggles,
+}
+
 pub struct SeexUi {
     pub state: Arc<Mutex<MonitorState>>,
     _monitor: MonitorHandle,
@@ -131,6 +139,8 @@ pub struct SeexUi {
     pub file_dialog_running: bool,
     pub file_dialog_start_time: Option<Instant>,
     pub toast_state: ToastState,
+    /// What the control under the pointer does, and where to show it.
+    pub hover_hint: Option<(HintArea, SharedString)>,
     config_dirty: bool,
     config_save_time: Option<Instant>,
     /// Roman-script face chosen on the Font page; `None` means the platform UI
@@ -154,7 +164,7 @@ pub struct SeexUi {
 }
 
 pub fn app_title() -> String {
-    concat!("SeEx ", env!("CARGO_PKG_VERSION")).to_string()
+    "SeEx: seek and export".to_string()
 }
 
 /// Keeps the window above the others, the way the old `PIN` button did.
@@ -187,6 +197,45 @@ pub fn set_always_on_top(on_top: bool) {
 
 #[cfg(not(windows))]
 pub fn set_always_on_top(_on_top: bool) {}
+
+/// Rounds the window's corners the way Windows 11 and macOS do, by asking the
+/// compositor for the rounded preference. On older Windows the request is
+/// ignored, which leaves the square frame rather than failing.
+#[cfg(windows)]
+pub fn round_window_corners() {
+    use windows_sys::Win32::Graphics::Dwm::DwmSetWindowAttribute;
+
+    /// `DWMWA_WINDOW_CORNER_PREFERENCE`, with `DWMWCP_ROUND` as its value.
+    const CORNER_PREFERENCE: u32 = 33;
+    const ROUND: u32 = 2;
+
+    let title: Vec<u16> = app_title().encode_utf16().chain(std::iter::once(0)).collect();
+    let hwnd = unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(std::ptr::null(), title.as_ptr())
+    };
+    if hwnd.is_null() {
+        return;
+    }
+
+    let mut pid = 0u32;
+    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid) };
+    if pid != std::process::id() {
+        return;
+    }
+
+    let round = ROUND;
+    unsafe {
+        DwmSetWindowAttribute(
+            hwnd,
+            CORNER_PREFERENCE,
+            std::ptr::addr_of!(round).cast(),
+            std::mem::size_of::<u32>() as u32,
+        );
+    }
+}
+
+#[cfg(not(windows))]
+pub fn round_window_corners() {}
 
 /// Opens the window and keeps it alive until the user closes it.
 pub fn run() {
@@ -234,7 +283,18 @@ pub fn run() {
         } else {
             // egui opened always-on-top; keep that as the starting state.
             set_always_on_top(true);
+            round_window_corners();
         }
+
+        // Ask again once the window is mapped: some compositors ignore the
+        // preference when it arrives with the very first frame.
+        cx.spawn(async move |cx| {
+            cx.background_executor()
+                .timer(Duration::from_millis(800))
+                .await;
+            round_window_corners();
+        })
+        .detach();
     });
 }
 
@@ -359,6 +419,7 @@ impl SeexUi {
             file_dialog_running: false,
             file_dialog_start_time: None,
             toast_state: ToastState::default(),
+            hover_hint: None,
             config_dirty: false,
             config_save_time: None,
             font_latin_choice: config.latin_font.clone(),
@@ -769,6 +830,8 @@ impl SeexUi {
                 }),
             ),
             locale::t("Keep window on top", "窗口置顶"),
+            HintArea::StatusBar,
+            cx,
         )
         .into_any_element()
     }
@@ -810,7 +873,7 @@ impl SeexUi {
             .child(page)
     }
 
-    fn status_bar(&self) -> impl IntoElement {
+    fn status_bar(&self, window: &Window) -> impl IntoElement {
         let counts = self
             .state
             .lock()
@@ -824,6 +887,13 @@ impl SeexUi {
                 )
             })
             .unwrap_or_default();
+
+        // Three measured-equal columns: not left to flex-grow, which does not
+        // centre, so the middle column lands exactly on the window centre.
+        const PADDING: f32 = 14.0;
+        const GAP: f32 = 16.0;
+        let width = window.viewport_size().width.as_f32();
+        let column = ((width - PADDING * 2.0 - GAP * 2.0) / 3.0).max(120.0);
 
         div()
             .flex()
@@ -839,25 +909,48 @@ impl SeexUi {
             .border_color(theme::border())
             .text_size(px(theme::scaled_font(24.0)))
             .text_color(theme::text_color())
-            .child(counts)
+            .child(div().w(px(column)).flex_shrink_0().overflow_hidden().text_ellipsis().child(counts))
+            .child(
+                // Measured-equal sides put this column on the window centre, so
+                // a notice always lands in the middle of the bar.
+                div()
+                    .w(px(column))
+                    .flex_shrink_0()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .overflow_hidden()
+                    .child(self.status_message()),
+            )
             .child(div().flex_1())
-            .child(self.notice())
             .child(
                 div()
+                    .w(px(column))
+                    .flex_shrink_0()
+                    .flex()
+                    .flex_row()
+                    .justify_end()
+                    .overflow_hidden()
+                    .text_ellipsis()
                     .text_color(theme::muted())
                     .child("Copyright (c) Ref42. All rights reserved."),
             )
     }
 
-    /// The running notice, docked in the status bar so it cannot cover a page.
-    fn notice(&self) -> AnyElement {
-        let (text, color) = match self.toast_state.message {
+    /// Whatever the status bar is saying right now: a running notice if there is
+    /// one, otherwise the hint for the control under the pointer. Both use the
+    /// same filled box, so neither can be missed.
+    fn status_message(&self) -> AnyElement {
+        let (text, accent) = match self.toast_state.message {
             Some(ToastMessage::Success(ref message)) => (message.clone(), theme::success()),
             Some(ToastMessage::Error(ref message)) => (message.clone(), theme::danger()),
             Some(ToastMessage::Info(ref message)) => (message.clone(), theme::primary()),
-            None => return div().into_any_element(),
+            None => match self.hover_hint {
+                Some((HintArea::StatusBar, ref hint)) => (hint.to_string(), theme::primary()),
+                _ => return div().into_any_element(),
+            },
         };
-        components::status_notice(text, color).into_any_element()
+        components::status_box(text, accent).into_any_element()
     }
 }
 
@@ -874,7 +967,7 @@ impl Render for SeexUi {
             .bg(theme::app_bg())
             .child(self.top_bar(cx))
             .child(self.central(window, cx))
-            .child(self.status_bar())
+            .child(self.status_bar(window))
     }
 }
 

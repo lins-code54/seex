@@ -9,7 +9,7 @@
 use gpui_kit::component::input::Input;
 use gpui_kit::*;
 
-use crate::ui::app::{FileDialogKind, InputSlot, SeexUi};
+use crate::ui::app::{FileDialogKind, HintArea, InputSlot, SeexUi};
 use crate::ui::locale::Lang;
 use crate::ui::{components, locale, theme};
 
@@ -386,9 +386,11 @@ impl SeexUi {
                         }),
                     ),
                     locale::t(
-                        "Merge: export all components into a single library file",
-                        "合并：将所有元件输出到同一个库文件中",
+                        "Merge: export all components into one library file",
+                        "合并：所有元件输出到同一个库文件",
                     ),
+                    HintArea::ExportToggles,
+                    cx,
                 ))
                 .child(components::hint(
                     components::selectable(
@@ -405,9 +407,11 @@ impl SeexUi {
                         }),
                     ),
                     locale::t(
-                        "Append: add components to an existing library instead of overwriting it",
-                        "追加：向已有库文件追加元件，而不是覆盖",
+                        "Append: add to an existing library instead of overwriting",
+                        "追加：向已有库文件追加，而不是覆盖",
                     ),
+                    HintArea::ExportToggles,
+                    cx,
                 ));
         }
 
@@ -427,9 +431,11 @@ impl SeexUi {
                     }),
                 ),
                 locale::t(
-                    "Continue On Error: skip failed components and keep exporting instead of stopping on first error",
-                    "出错继续：单个元件导出失败时跳过并继续，不中断整个导出",
+                    "Continue On Error: skip failed components, keep exporting",
+                    "出错继续：跳过失败的元件，不中断导出",
                 ),
+                HintArea::ExportToggles,
+                cx,
             ))
             .child(components::hint(
                 components::selectable(
@@ -446,9 +452,11 @@ impl SeexUi {
                     }),
                 ),
                 locale::t(
-                    "Force: re-export and overwrite even if the component already exists in the library",
-                    "强制：即使元件已存在也强制重新导出，覆盖现有数据",
+                    "Force: overwrite components that already exist",
+                    "强制：覆盖库中已存在的元件",
                 ),
+                HintArea::ExportToggles,
+                cx,
             ))
             .child(components::hint(
                 components::selectable(
@@ -467,9 +475,11 @@ impl SeexUi {
                     }),
                 ),
                 locale::t(
-                    "English metadata: fill component property fields (description, package, etc.) in English",
-                    "英文元数据：使用英文填写元件属性字段（如描述、封装等）",
+                    "English metadata: write component fields in English",
+                    "英文元数据：元件属性字段使用英文",
                 ),
+                HintArea::ExportToggles,
+                cx,
             ));
 
         let mut body = div()
@@ -555,6 +565,12 @@ impl SeexUi {
                     ),
             )
             .child(toggles);
+
+        // The explanation for a toggle sits directly under the row, where it is
+        // next to the button it describes and has room to be read in full.
+        if let Some((HintArea::ExportToggles, hint)) = self.hover_hint.clone() {
+            body = body.child(components::status_box(hint, theme::primary()));
+        }
 
         components::section(body).into_any_element()
     }
