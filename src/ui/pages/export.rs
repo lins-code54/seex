@@ -148,52 +148,38 @@ impl SeexUi {
                     row = row.child(components::pill_text(text, color));
                 }
             }
-
-            if let Some((current, total, message)) = &progress {
-                let value = if *total > 0 {
-                    *current as f32 / *total as f32
-                } else {
-                    0.0
-                };
-                row = row.child(components::progress_bar(value, message.clone()));
-            }
-
-            row = row.child(div().flex_1()).child(components::button(
-                "export-library",
-                if running {
-                    locale::t("Running...", "运行中...")
-                } else {
-                    locale::t("Export Library", "导出库")
-                },
-                matched_count > 0 && !running,
-                cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.start_export();
-                    cx.notify();
-                }),
-            ));
-        } else {
-            if let Some((current, total, message)) = &progress {
-                let value = if *total > 0 {
-                    *current as f32 / *total as f32
-                } else {
-                    0.0
-                };
-                row = row.child(components::progress_bar(value, message.clone()));
-            }
-            row = row.child(div().flex_1()).child(components::button(
-                "export-library",
-                if running {
-                    locale::t("Running...", "运行中...")
-                } else {
-                    locale::t("Export Library", "导出库")
-                },
-                matched_count > 0 && !running,
-                cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                    this.start_export();
-                    cx.notify();
-                }),
-            ));
         }
+
+        // The bar takes every pixel the button does not need, which is the
+        // width the egui page gave it (`available_width - 160`). A spacer next
+        // to it would split that space in two and leave the bar half-length.
+        let bar = progress.map(|(current, total, message)| {
+            let value = if total > 0 {
+                current as f32 / total as f32
+            } else {
+                0.0
+            };
+            components::progress_bar(value, message)
+        });
+        if let Some(bar) = bar {
+            row = row.child(bar);
+        } else {
+            row = row.child(div().flex_1());
+        }
+
+        row = row.child(components::button(
+            "export-library",
+            if running {
+                locale::t("Running...", "运行中...")
+            } else {
+                locale::t("Export Library", "导出库")
+            },
+            matched_count > 0 && !running,
+            cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                this.start_export();
+                cx.notify();
+            }),
+        ));
 
         body = body.child(row);
 
