@@ -644,7 +644,7 @@ impl IntoElement for ColorDot {
         let ring = if self.selected {
             theme::primary()
         } else {
-            theme::border()
+            swatch_edge(color).into()
         };
         div()
             .id(self.id)
@@ -665,10 +665,12 @@ impl IntoElement for ColorDot {
 /// the theme and matches the swatches it sits among.
 pub fn none_color_icon(size: f32, selected: bool) -> impl IntoElement {
     let edge = if selected { 2.0 } else { 1.0 };
+    // An empty tile needs a visible outline; the near-white hairline the other
+    // controls use would leave it all but invisible on the popup.
     let border = if selected {
         theme::primary()
     } else {
-        theme::subtle_border()
+        theme::border()
     };
     let slash = theme::text_color();
     let inset = (size * 0.28).round();
@@ -738,6 +740,17 @@ const COLOR_PRESETS: [[u8; 3]; 24] = [
     [255, 160, 200],
 ];
 
+/// The hairline around a colour swatch: the colour itself, darkened, rather
+/// than the pale grey the other controls use.
+///
+/// A near-white hairline anti-aliases into the fill and leaves a light fringe
+/// around it, which on a saturated tile reads as a ragged, pixelated edge. A
+/// darker shade of the same colour blends into the fill instead, so the tile
+/// keeps one crisp contour — and a light tile still gets an edge to sit behind.
+fn swatch_edge(color: Hsla) -> Hsla {
+    color.darken(0.22)
+}
+
 /// The body of the colour picker: one slider per H/S/L component and the preset
 /// palette under them.
 ///
@@ -783,21 +796,34 @@ fn color_picker_panel(
     }
     for (index, preset) in COLOR_PRESETS.iter().enumerate() {
         let swatch = theme::hsla_of(*preset);
+        let selected = color == Some(*preset);
         let picker = picker.clone();
-        palette = palette.child(
+        let mut tile =
             ColorSwatch::new(SharedString::from(format!("{id}-preset-{index}")), swatch)
                 .bg(swatch)
                 .w(px(24.0))
                 .h(px(24.0))
                 .rounded(px(theme::RADIUS_SM))
                 .border(px(1.0))
-                .border_color(theme::subtle_border())
-                .selected(color == Some(*preset))
+                .border_color(swatch_edge(swatch))
+                .selected(selected)
                 .cursor_pointer()
                 .on_click(move |color, _event, window, cx| {
                     picker.update(cx, |state, cx| state.select_color(color, window, cx));
-                }),
-        );
+                });
+        if selected {
+            // `selected` above is the state assistive technology reads; the ring
+            // the eye needs is drawn here, as a zero-blur shadow spread outside
+            // the tile, which leaves the tile's own colours untouched.
+            tile = tile.shadow(vec![BoxShadow {
+                color: theme::primary().into(),
+                offset: point(px(0.0), px(0.0)),
+                blur_radius: px(0.0),
+                spread_radius: px(2.0),
+                inset: false,
+            }]);
+        }
+        palette = palette.child(tile);
     }
 
     div()
