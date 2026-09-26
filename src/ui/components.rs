@@ -14,6 +14,7 @@ use gpui_kit::component::color_picker::ColorPickerState;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::slider::{Slider, SliderState};
+use gpui_kit::component::Colorize as _;
 
 use crate::ui::theme;
 
@@ -448,6 +449,29 @@ pub fn font_row(
 /// or a hover hint — so the two read as the same kind of thing: a filled box in
 /// the accent colour, with white text.
 pub fn status_box(text: impl Into<SharedString>, accent: Rgba) -> impl IntoElement {
+    status_box_shape(accent).child(text.into())
+}
+
+/// The same box as a button, for the one thing in the bar that is worth
+/// clicking: it looks identical, and lifts a little under the pointer so the
+/// click is discoverable.
+pub fn status_button(
+    id: impl Into<ElementId>,
+    text: impl Into<SharedString>,
+    accent: Rgba,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    let hover: Hsla = accent.into();
+    status_box_shape(accent)
+        .id(id)
+        .cursor_pointer()
+        .hover(move |style| style.bg(hover.lighten(0.12)))
+        .on_click(on_click)
+        .child(text.into())
+}
+
+/// The box both of the above are built from.
+fn status_box_shape(accent: Rgba) -> Div {
     div()
         .flex()
         .items_center()
@@ -461,7 +485,6 @@ pub fn status_box(text: impl Into<SharedString>, accent: Rgba) -> impl IntoEleme
         .text_ellipsis()
         .text_size(px(theme::scaled_font(23.0)))
         .text_color(theme::white())
-        .child(text.into())
 }
 
 /// A wide, count-bearing pill that heads an action row.

@@ -28,6 +28,11 @@ pub const PATTERN_QUICK: &str = "regex:(?m)^(C\\d{3,})$";
 pub const PATTERN_FULL: &str = "regex:编号[：:]\\s*(C\\d+)";
 const RELEASES_API_URL: &str = "https://api.github.com/repos/ref42/seex/releases/latest";
 const RELEASES_WEB_URL: &str = "https://github.com/ref42/seex/releases/latest";
+/// How long after start-up the first background update check runs, and how
+/// often it asks again. The check used to happen only when someone pressed the
+/// button on the More page, so a release could sit unnoticed indefinitely.
+const UPDATE_CHECK_DELAY: Duration = Duration::from_secs(5);
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Page {
@@ -153,6 +158,8 @@ pub struct SeexUi {
     pub clear_confirm: bool,
     last_theme_check: Instant,
     pub update_state: Arc<Mutex<UpdateState>>,
+    /// When the next background update check falls due.
+    next_update_check: Instant,
     pub show_donate: bool,
     pub theme_preset: String,
     pub show_failed_ids: bool,
@@ -443,6 +450,7 @@ impl SeexUi {
             clear_confirm: false,
             last_theme_check: Instant::now(),
             update_state: Arc::new(Mutex::new(UpdateState::default())),
+            next_update_check: Instant::now() + UPDATE_CHECK_DELAY,
             show_donate: config.show_donate,
             theme_preset: theme::normalize_theme_name(&config.theme),
             show_failed_ids: false,
@@ -724,12 +732,23 @@ impl SeexUi {
         self.poll_file_dialog();
         self.process_config_save();
         self.sync_system_theme(cx);
+        self.check_for_updates_when_due();
         if let Some(show_until) = self.toast_state.show_until {
             if Instant::now() > show_until {
                 self.toast_state.message = None;
                 self.toast_state.show_until = None;
             }
         }
+    }
+
+    /// Asks GitHub once the interval has passed. Nobody has to go looking for a
+    /// release: the answer is announced in the status bar.
+    fn check_for_updates_when_due(&mut self) {
+        if Instant::now() < self.next_update_check {
+            return;
+        }
+        self.next_update_check = Instant::now() + UPDATE_CHECK_INTERVAL;
+        self.run_update_check(false);
     }
 
     fn sync_system_theme(&mut self, cx: &mut Context<Self>) {
@@ -754,15 +773,23 @@ impl SeexUi {
 
     /// Asks GitHub for the latest release on a worker thread, exactly as the
     /// egui page did, and parks the answer where the Updates panel reads it.
+    /// This is the button on the More page, so a failure is worth reporting.
     pub fn start_update_check(&self) {
+        self.run_update_check(true);
+    }
+
+    /// The check itself. A background one keeps quiet when it cannot reach
+    /// GitHub: an error the user never asked for, on a page they never opened,
+    /// is worse than no answer at all.
+    fn run_update_check(&self, report_errors: bool) {
         if let Ok(mut state) = self.update_state.lock() {
             if state.checking {
                 return;
             }
-            *state = UpdateState {
-                checking: true,
-                ..UpdateState::default()
-            };
+            // The last answer stays on screen while the new one is on its way,
+            // so a reminder does not blink out every time the check re-runs.
+            state.checking = true;
+            state.error = None;
         }
 
         let state = Arc::clone(&self.update_state);
@@ -784,10 +811,30 @@ impl SeexUi {
                             Some(release.tag_name.trim_start_matches('v').to_string());
                         state.release_url = Some(release.html_url);
                     }
-                    Err(error) => state.error = Some(format!("Update check failed: {error}")),
+                    Err(error) => {
+                        if report_errors {
+                            state.error = Some(format!("Update check failed: {error}"));
+                        }
+                    }
                 }
             }
         });
+    }
+
+    /// The newer release to tell the user about, with the page that offers it.
+    /// `None` while the check is in flight, when the build is current, and when
+    /// the check could not reach GitHub.
+    pub fn available_update(&self) -> Option<(String, String)> {
+        let state = self.update_state.lock().ok()?;
+        let latest = state.latest_version.clone()?;
+        if !version_is_newer(&latest, env!("CARGO_PKG_VERSION")) {
+            return None;
+        }
+        let url = state
+            .release_url
+            .clone()
+            .unwrap_or_else(|| RELEASES_WEB_URL.to_string());
+        Some((latest, url))
     }
 
     pub fn start_file_dialog(&mut self, kind: FileDialogKind) {
@@ -1040,7 +1087,7 @@ impl SeexUi {
             .child(page)
     }
 
-    fn status_bar(&self, window: &Window) -> impl IntoElement {
+    fn status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
         let counts = self
             .state
             .lock()
@@ -1087,7 +1134,7 @@ impl SeexUi {
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
-                    .child(self.status_message()),
+                    .child(self.status_message(cx)),
             )
             .child(div().flex_1())
             .child(
@@ -1105,16 +1152,32 @@ impl SeexUi {
     }
 
     /// Whatever the status bar is saying right now: a running notice if there is
-    /// one, otherwise the hint for the control under the pointer. Both use the
-    /// same filled box, so neither can be missed.
-    fn status_message(&self) -> AnyElement {
+    /// one, otherwise the hint for the control under the pointer, otherwise the
+    /// waiting update. The first two use the same filled box; the update is the
+    /// same box again, but it takes a click.
+    fn status_message(&self, cx: &mut Context<Self>) -> AnyElement {
         let (text, accent) = match self.toast_state.message {
             Some(ToastMessage::Success(ref message)) => (message.clone(), theme::success()),
             Some(ToastMessage::Error(ref message)) => (message.clone(), theme::danger()),
             Some(ToastMessage::Info(ref message)) => (message.clone(), theme::primary()),
             None => match self.hover_hint {
                 Some((HintArea::StatusBar, ref hint)) => (hint.to_string(), theme::primary()),
-                _ => return div().into_any_element(),
+                _ => {
+                    let Some((version, url)) = self.available_update() else {
+                        return div().into_any_element();
+                    };
+                    return components::status_button(
+                        "update-available",
+                        format!(
+                            "{} v{version} — {}",
+                            locale::t("Update to", "更新到"),
+                            locale::t("download", "下载")
+                        ),
+                        theme::primary(),
+                        move |_event: &ClickEvent, _window, cx| cx.open_url(&url),
+                    )
+                    .into_any_element();
+                }
             },
         };
         components::status_box(text, accent).into_any_element()
@@ -1134,7 +1197,7 @@ impl Render for SeexUi {
             .bg(theme::app_bg())
             .child(self.top_bar(cx))
             .child(self.central(window, cx))
-            .child(self.status_bar(window))
+            .child(self.status_bar(window, cx))
     }
 }
 
