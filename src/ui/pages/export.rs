@@ -9,7 +9,7 @@
 use gpui_kit::component::input::Input;
 use gpui_kit::*;
 
-use crate::ui::app::{FileDialogKind, HintArea, InputSlot, SeexUi};
+use crate::ui::app::{ColorSlot, FileDialogKind, HintArea, InputSlot, SeexUi};
 use crate::ui::locale::Lang;
 use crate::ui::{components, locale, theme};
 
@@ -276,6 +276,13 @@ impl SeexUi {
         let parallel_input = self.input(InputSlot::Parallel, window, cx);
         let stroke_input = self.input(InputSlot::StrokeHex, window, cx);
         let fill_input = self.input(InputSlot::FillHex, window, cx);
+        // The pickers behind the two swatches. A colour typed into a hex box is
+        // folded in here, where the `Window` the sliders need is available.
+        let stroke_picker = self.color_picker(ColorSlot::Stroke, window, cx);
+        let fill_picker = self.color_picker(ColorSlot::Fill, window, cx);
+        self.sync_color_pickers(window, cx);
+        stroke_picker.update(cx, |state, cx| state.sync_pending_value(window, cx));
+        fill_picker.update(cx, |state, cx| state.sync_pending_value(window, cx));
 
         let target_row = div()
             .flex()
@@ -291,7 +298,7 @@ impl SeexUi {
                     if let Ok(mut state) = this.state.lock() {
                         state.set_export_target("altium".to_string());
                     }
-                    this.active_color_picker = None;
+                    this.close_color_pickers(cx);
                     this.mark_config_dirty();
                     cx.notify();
                 }),
@@ -304,7 +311,7 @@ impl SeexUi {
                     if let Ok(mut state) = this.state.lock() {
                         state.set_export_target("kicad".to_string());
                     }
-                    this.active_color_picker = None;
+                    this.close_color_pickers(cx);
                     this.mark_config_dirty();
                     cx.notify();
                 }),
@@ -502,14 +509,20 @@ impl SeexUi {
                     .items_center()
                     .gap(px(12.0))
                     .child(components::color_setting(
+                        "sch-stroke-color",
                         locale::t("SCH stroke color:", "原理图描边颜色:"),
                         self.schematic_stroke_color,
+                        &stroke_picker,
                         &stroke_input,
+                        cx,
                     ))
                     .child(components::color_setting(
+                        "sch-fill-color",
                         locale::t("SCH fill color:", "原理图填充颜色:"),
                         self.schematic_fill_color,
+                        &fill_picker,
                         &fill_input,
+                        cx,
                     )),
             );
         }

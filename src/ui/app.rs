@@ -13,6 +13,7 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+use gpui_kit::component::color_picker::{ColorPickerEvent, ColorPickerState};
 use gpui_kit::component::input::{InputEvent, InputState, TextareaState};
 use gpui_kit::component::{Root, Theme as KitTheme, ThemeMode};
 use gpui_kit::*;
@@ -52,6 +53,40 @@ pub enum InputSlot {
 pub enum ManualImportStatus {
     Imported(usize),
     NoIds,
+}
+
+/// The two schematic colours the Export settings can pick, named so the picker
+/// registry, the hex boxes and the exporter all agree on which is which.
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+pub enum ColorSlot {
+    Stroke,
+    Fill,
+}
+
+impl ColorSlot {
+    pub const ALL: [ColorSlot; 2] = [ColorSlot::Stroke, ColorSlot::Fill];
+
+    fn index(self) -> usize {
+        match self {
+            ColorSlot::Stroke => 0,
+            ColorSlot::Fill => 1,
+        }
+    }
+
+    /// The box beside the swatch, which shows and edits the same colour.
+    fn input_slot(self) -> InputSlot {
+        match self {
+            ColorSlot::Stroke => InputSlot::StrokeHex,
+            ColorSlot::Fill => InputSlot::FillHex,
+        }
+    }
+
+    fn color(self, ui: &SeexUi) -> [u8; 3] {
+        match self {
+            ColorSlot::Stroke => ui.schematic_stroke_color,
+            ColorSlot::Fill => ui.schematic_fill_color,
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -124,7 +159,12 @@ pub struct SeexUi {
     pub schematic_fill_color: [u8; 3],
     pub schematic_stroke_hex: String,
     pub schematic_fill_hex: String,
-    pub active_color_picker: Option<u8>,
+    /// One picker per schematic colour, created the first time the Export page
+    /// draws the swatch, so the constructor need not ask for a `Window`.
+    color_pickers: HashMap<ColorSlot, Entity<ColorPickerState>>,
+    /// Set when a hex box edits a colour. The picker cannot be told from there
+    /// (no `Window`), so the next render pushes the value into its sliders.
+    color_sync: [bool; 2],
     pub manual_import_text: String,
     pub manual_import_status: Option<ManualImportStatus>,
     /// The manual-import box on the Monitor page.
@@ -407,7 +447,8 @@ impl SeexUi {
             schematic_fill_color: config.export.schematic_fill_color,
             schematic_stroke_hex: color_to_hex(config.export.schematic_stroke_color),
             schematic_fill_hex: color_to_hex(config.export.schematic_fill_color),
-            active_color_picker: None,
+            color_pickers: HashMap::new(),
+            color_sync: [false; 2],
             manual_import_text: String::new(),
             manual_import_status: None,
             import_input,
@@ -473,6 +514,90 @@ impl SeexUi {
             .unwrap_or_default()
     }
 
+    /// The colour picker behind one of the two swatches, created on first use
+    /// for the same reason the text boxes are.
+    pub fn color_picker(
+        &mut self,
+        slot: ColorSlot,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Entity<ColorPickerState> {
+        if let Some(entity) = self.color_pickers.get(&slot) {
+            return entity.clone();
+        }
+        let color = theme::hsla_of(slot.color(self));
+        let entity = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
+        let subscription = cx.subscribe_in(
+            &entity,
+            window,
+            move |this, _picker, event: &ColorPickerEvent, window, cx| {
+                if let ColorPickerEvent::Change(Some(color)) = event {
+                    this.color_picked(slot, *color, window, cx);
+                }
+            },
+        );
+        self._input_subscriptions.push(subscription);
+        self.color_pickers.insert(slot, entity.clone());
+        entity
+    }
+
+    /// Folds a colour chosen in the picker back into the state the exporter
+    /// reads, the hex box beside the swatch, and the saved config.
+    fn color_picked(
+        &mut self,
+        slot: ColorSlot,
+        color: Hsla,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let rgb = theme::rgb_of(color);
+        match slot {
+            ColorSlot::Stroke => {
+                self.schematic_stroke_color = rgb;
+                self.schematic_stroke_hex = color_to_hex(rgb);
+            }
+            ColorSlot::Fill => {
+                self.schematic_fill_color = rgb;
+                self.schematic_fill_hex = color_to_hex(rgb);
+            }
+        }
+        let hex = color_to_hex(rgb);
+        let input = self.input(slot.input_slot(), window, cx);
+        input.update(cx, |state, cx| state.set_value(hex, window, cx));
+        self.color_sync[slot.index()] = false;
+        self.mark_config_dirty();
+        cx.notify();
+    }
+
+    /// Pushes a colour typed into a hex box into its picker. The slider drag is
+    /// the picker's own business, so this only runs for boxes the user edited.
+    pub fn sync_color_pickers(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        for slot in ColorSlot::ALL {
+            if !self.color_sync[slot.index()] {
+                continue;
+            }
+            let Some(picker) = self.color_pickers.get(&slot).cloned() else {
+                continue;
+            };
+            let color = theme::hsla_of(slot.color(self));
+            picker.update(cx, |state, cx| state.set_value(color, window, cx));
+            self.color_sync[slot.index()] = false;
+        }
+    }
+
+    /// Drops both picker popups, which the target switch does when it hides the
+    /// colour rows out from under an open popup.
+    pub fn close_color_pickers(&mut self, cx: &mut Context<Self>) {
+        for picker in self.color_pickers.values() {
+            picker.update(cx, |state, cx| state.set_open(false, cx));
+        }
+    }
+
+    /// The colour the picker should show: what the hex box last committed.
+    pub fn color_of(&self, slot: ColorSlot) -> [u8; 3] {
+        slot.color(self)
+    }
+
     fn input_seed(&self, slot: InputSlot) -> (&'static str, String) {
         let state = self.state.lock().ok();
         let field = |get: fn(&MonitorState) -> String| {
@@ -534,12 +659,14 @@ impl SeexUi {
                 if let Some(color) = parse_hex_color(&value) {
                     self.schematic_stroke_color = color;
                     self.schematic_stroke_hex = color_to_hex(color);
+                    self.color_sync[ColorSlot::Stroke.index()] = true;
                 }
             }
             InputSlot::FillHex => {
                 if let Some(color) = parse_hex_color(&value) {
                     self.schematic_fill_color = color;
                     self.schematic_fill_hex = color_to_hex(color);
+                    self.color_sync[ColorSlot::Fill.index()] = true;
                 }
             }
             InputSlot::FontSearch => {

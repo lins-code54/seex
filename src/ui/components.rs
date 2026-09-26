@@ -7,6 +7,13 @@
 //! `border` and 18×16 padding, and rows are `row_bg` with a `subtle_border`.
 
 use gpui_kit::*;
+// The swatch element lives in the unstyled base layer, along with the
+// `Selectable` trait `Popover` asks of its trigger.
+use gpui_kit::base::{ColorSwatch, Selectable};
+use gpui_kit::component::color_picker::ColorPickerState;
+use gpui_kit::component::input::InputState;
+use gpui_kit::component::popover::Popover;
+use gpui_kit::component::slider::{Slider, SliderState};
 
 use crate::ui::theme;
 
@@ -526,16 +533,29 @@ pub fn progress_bar(value: f32, message: impl Into<SharedString>) -> impl IntoEl
         )
 }
 
-/// `color_setting`: the 180px label column, a round swatch, and the `#RRGGBB`
-/// box that keeps the swatch in step with what is typed.
+/// `color_setting`: the 180px label column, the round swatch that opens the
+/// colour picker, and the `#RRGGBB` box that keeps the swatch in step with what
+/// is typed.
+///
+/// The picker is the kit's [`ColorPickerState`]: it owns the palette, the H/S/L
+/// sliders and the commit events, so the page only has to render the trigger
+/// and hand the chosen colour back through that state's change event.
 pub fn color_setting(
+    id: &'static str,
     label: impl Into<SharedString>,
     color: [u8; 3],
-    input: &Entity<gpui_kit::component::input::InputState>,
+    picker: &Entity<ColorPickerState>,
+    input: &Entity<InputState>,
+    cx: &mut App,
 ) -> impl IntoElement {
-    let swatch = gpui_kit::rgb(
-        ((color[0] as u32) << 16) | ((color[1] as u32) << 8) | (color[2] as u32),
-    );
+    let swatch = theme::hsla_of(color);
+    let dot = ColorDot {
+        id: id.into(),
+        color: swatch,
+        selected: false,
+    };
+
+    let open_picker = picker.clone();
     div()
         .flex()
         .flex_row()
@@ -543,17 +563,165 @@ pub fn color_setting(
         .gap(px(12.0))
         .child(fixed_label(label))
         .child(
-            div()
-                .w(px(26.0))
-                .h(px(26.0))
-                .rounded_full()
-                .bg(swatch)
-                .border(px(1.0))
-                .border_color(theme::border()),
+            Popover::new(id)
+                .anchor(Anchor::BottomLeft)
+                .open(picker.read(cx).is_open())
+                .on_open_change(move |open, _window, cx| {
+                    let open = *open;
+                    open_picker.update(cx, |state, cx| state.set_open(open, cx));
+                })
+                .trigger(dot)
+                .child(color_picker_panel(id, picker, cx)),
         )
         .child(
             div()
                 .w(px(100.0))
                 .child(gpui_kit::component::input::Input::new(input).h(px(28.0))),
         )
+}
+
+/// The shared dot both colour settings use: a round swatch that opens the
+/// picker popup.
+///
+/// [`Popover`] wants a [`Selectable`] trigger, and the kit's own swatch is not
+/// one — it carries radio semantics for a palette instead. This wrapper draws
+/// nothing but the colour, and reports the popup's open state as its selected
+/// state, which is what the popover draws the ring from.
+struct ColorDot {
+    id: ElementId,
+    color: Hsla,
+    selected: bool,
+}
+
+impl Selectable for ColorDot {
+    fn selected(mut self, selected: bool) -> Self {
+        self.selected = selected;
+        self
+    }
+
+    fn is_selected(&self) -> bool {
+        self.selected
+    }
+}
+
+impl IntoElement for ColorDot {
+    type Element = AnyElement;
+
+    fn into_element(self) -> AnyElement {
+        let ring = if self.selected {
+            theme::primary()
+        } else {
+            theme::border()
+        };
+        div()
+            .id(self.id)
+            .w(px(26.0))
+            .h(px(26.0))
+            .rounded_full()
+            .bg(self.color)
+            .border(px(if self.selected { 2.0 } else { 1.0 }))
+            .border_color(ring)
+            .cursor_pointer()
+            .hover(|style| style.border_color(theme::primary()))
+            .into_any_element()
+    }
+}
+
+/// The colours offered under the sliders: the neutrals and the two Altium
+/// defaults first, then two rows of the hues these palettes use most.
+const COLOR_PRESETS: [[u8; 3]; 24] = [
+    [0, 0, 0],
+    [64, 64, 64],
+    [128, 128, 128],
+    [192, 192, 192],
+    [255, 255, 255],
+    [11, 56, 104],
+    [255, 255, 224],
+    [0, 92, 175],
+    [196, 30, 58],
+    [214, 93, 14],
+    [240, 180, 0],
+    [76, 154, 42],
+    [0, 132, 132],
+    [24, 76, 168],
+    [112, 48, 160],
+    [190, 24, 93],
+    [255, 138, 128],
+    [255, 196, 128],
+    [255, 236, 128],
+    [168, 220, 128],
+    [128, 222, 214],
+    [128, 178, 255],
+    [196, 160, 255],
+    [255, 160, 200],
+];
+
+/// The body of the colour picker: one slider per H/S/L component and the preset
+/// palette under them.
+///
+/// Every control writes into `picker`, which emits the change the page folds
+/// back into its own state, so the swatch, the hex box and the export all see
+/// the same colour.
+fn color_picker_panel(
+    id: &'static str,
+    picker: &Entity<ColorPickerState>,
+    cx: &mut App,
+) -> AnyElement {
+    let sliders = picker.read(cx).sliders().clone();
+    let current = picker
+        .read(cx)
+        .displayed_color()
+        .unwrap_or_else(|| theme::hsla_of([0, 0, 0]));
+
+    let slider_row = |title: &'static str, state: &Entity<SliderState>| {
+        div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(8.0))
+            .w_full()
+            .child(
+                div()
+                    .w(px(14.0))
+                    .text_size(px(SMALL))
+                    .text_color(theme::muted())
+                    .child(title),
+            )
+            .child(div().flex_1().child(Slider::new(state)))
+    };
+
+    let mut presets = div()
+        .flex()
+        .flex_row()
+        .flex_wrap()
+        .gap(px(6.0))
+        .w(px(238.0));
+    for (index, preset) in COLOR_PRESETS.iter().enumerate() {
+        let swatch = theme::hsla_of(*preset);
+        let picker = picker.clone();
+        presets = presets.child(
+            ColorSwatch::new(SharedString::from(format!("{id}-preset-{index}")), swatch)
+                .bg(swatch)
+                .w(px(24.0))
+                .h(px(24.0))
+                .rounded(px(theme::RADIUS_SM))
+                .border(px(1.0))
+                .border_color(theme::subtle_border())
+                .selected(current == swatch)
+                .cursor_pointer()
+                .on_click(move |color, _event, window, cx| {
+                    picker.update(cx, |state, cx| state.select_color(color, window, cx));
+                }),
+        );
+    }
+
+    div()
+        .flex()
+        .flex_col()
+        .gap(px(10.0))
+        .child(slider_row("H", sliders.hue()))
+        .child(slider_row("S", sliders.saturation()))
+        .child(slider_row("L", sliders.lightness()))
+        .child(presets)
+        .into_any_element()
 }

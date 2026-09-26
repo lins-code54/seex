@@ -264,3 +264,17 @@ pub fn progress_fill() -> Rgba {
 pub fn white() -> Rgba {
     rgb(0xffffff)
 }
+
+/// A `#RRGGBB` triple as the `Hsla` the colour picker works in.
+pub fn hsla_of(color: [u8; 3]) -> Hsla {
+    let packed = ((color[0] as u32) << 16) | ((color[1] as u32) << 8) | color[2] as u32;
+    rgb(packed).into()
+}
+
+/// The reverse, dropping the alpha: the exporter and the config both store
+/// three opaque bytes.
+pub fn rgb_of(color: Hsla) -> [u8; 3] {
+    let rgba: Rgba = color.into();
+    let channel = |value: f32| (value * 255.0).round().clamp(0.0, 255.0) as u8;
+    [channel(rgba.r), channel(rgba.g), channel(rgba.b)]
+}
