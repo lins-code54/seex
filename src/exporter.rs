@@ -31,7 +31,7 @@ pub struct ExportRequest {
     pub lcsc_english: bool,
     pub force: bool,
     pub schematic_stroke_color: [u8; 3],
-    pub schematic_fill_color: [u8; 3],
+    pub schematic_fill_color: Option<[u8; 3]>,
 }
 
 pub fn spawn_export(state: Arc<Mutex<MonitorState>>, req: ExportRequest) {

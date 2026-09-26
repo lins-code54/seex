@@ -501,6 +501,15 @@ impl SeexUi {
             .child(target_row);
 
         if target != "kicad" {
+            // The fill can be "no colour", so its palette leads with the
+            // candidate for that; the stroke always has a colour.
+            let no_fill = components::none_color_candidate(
+                "sch-fill-none",
+                self.schematic_fill_color.is_none(),
+                cx.listener(|this, _event: &ClickEvent, window, cx| {
+                    this.clear_color(ColorSlot::Fill, window, cx);
+                }),
+            );
             body = body.child(
                 div()
                     .flex()
@@ -511,17 +520,19 @@ impl SeexUi {
                     .child(components::color_setting(
                         "sch-stroke-color",
                         locale::t("SCH stroke color:", "原理图描边颜色:"),
-                        self.schematic_stroke_color,
+                        self.color_of(ColorSlot::Stroke),
                         &stroke_picker,
                         &stroke_input,
+                        None,
                         cx,
                     ))
                     .child(components::color_setting(
                         "sch-fill-color",
                         locale::t("SCH fill color:", "原理图填充颜色:"),
-                        self.schematic_fill_color,
+                        self.color_of(ColorSlot::Fill),
                         &fill_picker,
                         &fill_input,
+                        Some(no_fill),
                         cx,
                     )),
             );

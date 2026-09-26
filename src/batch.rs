@@ -15,6 +15,7 @@ use crate::altium::merge::{
     write_schlib_records,
 };
 use crate::altium::pcblib::{PcbLibrary, write_pcblib};
+use crate::altium::schlib::NO_FILL_BGR;
 use crate::altium::workflow::{
     build_pcblib_library_from_detail, build_schlib_component_from_detail_with_color, export_pcblib,
     export_schlib_with_options, resolved_footprint_name,
@@ -40,8 +41,20 @@ pub struct BatchOptions {
     pub english_metadata: bool,
     pub force: bool,
     pub schematic_stroke_color: [u8; 3],
-    pub schematic_fill_color: [u8; 3],
+    /// `None` exports the symbol body with no fill at all.
+    pub schematic_fill_color: Option<[u8; 3]>,
     pub progress: Option<ExportProgressCallback>,
+}
+
+/// The Altium colour integer for a configured `#RRGGBB`.
+fn color_bgr(color: [u8; 3]) -> i32 {
+    color[0] as i32 | ((color[1] as i32) << 8) | ((color[2] as i32) << 16)
+}
+
+/// The same for an optional colour, where "no colour" is the sentinel the
+/// SchLib writer turns into a transparent area.
+fn fill_bgr(color: Option<[u8; 3]>) -> i32 {
+    color.map_or(NO_FILL_BGR, color_bgr)
 }
 
 #[derive(Debug, Clone)]
@@ -861,7 +874,7 @@ async fn build_merged_components_parallel(
     named: Vec<NamedMergeComponent>,
     merged_pcblib_file: &str,
     schematic_stroke_color: [u8; 3],
-    schematic_fill_color: [u8; 3],
+    schematic_fill_color: Option<[u8; 3]>,
     parallel: usize,
     summary: &mut BatchSummary,
     progress: &mut BatchProgress,
@@ -930,7 +943,7 @@ async fn build_named_merged_component(
     named: NamedMergeComponent,
     merged_pcblib_file: &str,
     schematic_stroke_color: [u8; 3],
-    schematic_fill_color: [u8; 3],
+    schematic_fill_color: Option<[u8; 3]>,
 ) -> Result<IndexedMergeArtifacts> {
     let schlib_record = if targets.schlib {
         let symbol_data = named
@@ -944,12 +957,8 @@ async fn build_named_merged_component(
             Some(&named.footprint_name),
             Some(merged_pcblib_file),
             named.english_metadata.as_ref(),
-            schematic_stroke_color[0] as i32
-                | ((schematic_stroke_color[1] as i32) << 8)
-                | ((schematic_stroke_color[2] as i32) << 16),
-            schematic_fill_color[0] as i32
-                | ((schematic_fill_color[1] as i32) << 8)
-                | ((schematic_fill_color[2] as i32) << 16),
+            color_bgr(schematic_stroke_color),
+            fill_bgr(schematic_fill_color),
         )?;
         Some(schlib_record_from_component(&component)?)
     } else {
@@ -1170,12 +1179,8 @@ async fn export_component(
             &schlib_dir,
             options.force,
             options.english_metadata,
-            options.schematic_stroke_color[0] as i32
-                | ((options.schematic_stroke_color[1] as i32) << 8)
-                | ((options.schematic_stroke_color[2] as i32) << 16),
-            options.schematic_fill_color[0] as i32
-                | ((options.schematic_fill_color[1] as i32) << 8)
-                | ((options.schematic_fill_color[2] as i32) << 16),
+            color_bgr(options.schematic_stroke_color),
+            fill_bgr(options.schematic_fill_color),
         )
         .await?;
     }
@@ -1308,7 +1313,7 @@ mod tests {
             english_metadata: false,
             force: false,
             schematic_stroke_color: [11, 56, 104],
-            schematic_fill_color: [255, 255, 224],
+            schematic_fill_color: Some([255, 255, 224]),
             progress: None,
         };
 

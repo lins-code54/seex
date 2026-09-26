@@ -81,9 +81,10 @@ impl ColorSlot {
         }
     }
 
-    fn color(self, ui: &SeexUi) -> [u8; 3] {
+    /// The colour the slot carries, or `None` for the fill slot's "no colour".
+    fn color(self, ui: &SeexUi) -> Option<[u8; 3]> {
         match self {
-            ColorSlot::Stroke => ui.schematic_stroke_color,
+            ColorSlot::Stroke => Some(ui.schematic_stroke_color),
             ColorSlot::Fill => ui.schematic_fill_color,
         }
     }
@@ -156,7 +157,9 @@ pub struct SeexUi {
     pub theme_preset: String,
     pub show_failed_ids: bool,
     pub schematic_stroke_color: [u8; 3],
-    pub schematic_fill_color: [u8; 3],
+    /// `None` is the "no colour" fill: the symbol body keeps its outline and is
+    /// exported with a transparent area.
+    pub schematic_fill_color: Option<[u8; 3]>,
     pub schematic_stroke_hex: String,
     pub schematic_fill_hex: String,
     /// One picker per schematic colour, created the first time the Export page
@@ -446,7 +449,11 @@ impl SeexUi {
             schematic_stroke_color: config.export.schematic_stroke_color,
             schematic_fill_color: config.export.schematic_fill_color,
             schematic_stroke_hex: color_to_hex(config.export.schematic_stroke_color),
-            schematic_fill_hex: color_to_hex(config.export.schematic_fill_color),
+            schematic_fill_hex: config
+                .export
+                .schematic_fill_color
+                .map(color_to_hex)
+                .unwrap_or_default(),
             color_pickers: HashMap::new(),
             color_sync: [false; 2],
             manual_import_text: String::new(),
@@ -525,7 +532,9 @@ impl SeexUi {
         if let Some(entity) = self.color_pickers.get(&slot) {
             return entity.clone();
         }
-        let color = theme::hsla_of(slot.color(self));
+        // "No colour" has no sliders of its own: the picker starts from black,
+        // which is only what the wheel shows until the user picks something.
+        let color = theme::hsla_of(slot.color(self).unwrap_or([0, 0, 0]));
         let entity = cx.new(|cx| ColorPickerState::new(window, cx).default_value(color));
         let subscription = cx.subscribe_in(
             &entity,
@@ -557,13 +566,33 @@ impl SeexUi {
                 self.schematic_stroke_hex = color_to_hex(rgb);
             }
             ColorSlot::Fill => {
-                self.schematic_fill_color = rgb;
+                self.schematic_fill_color = Some(rgb);
                 self.schematic_fill_hex = color_to_hex(rgb);
             }
         }
         let hex = color_to_hex(rgb);
         let input = self.input(slot.input_slot(), window, cx);
         input.update(cx, |state, cx| state.set_value(hex, window, cx));
+        self.color_sync[slot.index()] = false;
+        self.mark_config_dirty();
+        cx.notify();
+    }
+
+    /// Picks the "no colour" candidate: the fill stops painting the symbol body
+    /// and the popup closes, the way a palette choice does.
+    pub fn clear_color(&mut self, slot: ColorSlot, window: &mut Window, cx: &mut Context<Self>) {
+        if slot == ColorSlot::Fill {
+            self.schematic_fill_color = None;
+            self.schematic_fill_hex = String::new();
+        }
+        let input = self.input(slot.input_slot(), window, cx);
+        input.update(cx, |state, cx| state.set_value("", window, cx));
+        if let Some(picker) = self.color_pickers.get(&slot).cloned() {
+            picker.update(cx, |state, cx| {
+                state.clear_value(window, cx);
+                state.set_open(false, cx);
+            });
+        }
         self.color_sync[slot.index()] = false;
         self.mark_config_dirty();
         cx.notify();
@@ -579,8 +608,11 @@ impl SeexUi {
             let Some(picker) = self.color_pickers.get(&slot).cloned() else {
                 continue;
             };
-            let color = theme::hsla_of(slot.color(self));
-            picker.update(cx, |state, cx| state.set_value(color, window, cx));
+            let color = slot.color(self).map(theme::hsla_of);
+            picker.update(cx, |state, cx| match color {
+                Some(color) => state.set_value(color, window, cx),
+                None => state.clear_value(window, cx),
+            });
             self.color_sync[slot.index()] = false;
         }
     }
@@ -593,8 +625,8 @@ impl SeexUi {
         }
     }
 
-    /// The colour the picker should show: what the hex box last committed.
-    pub fn color_of(&self, slot: ColorSlot) -> [u8; 3] {
+    /// The colour a swatch shows, or `None` for the fill's "no colour".
+    pub fn color_of(&self, slot: ColorSlot) -> Option<[u8; 3]> {
         slot.color(self)
     }
 
@@ -624,7 +656,10 @@ impl SeexUi {
                 field(|state| state.export_parallel.to_string()),
             ),
             InputSlot::StrokeHex => ("#RRGGBB", self.schematic_stroke_hex.clone()),
-            InputSlot::FillHex => ("#RRGGBB", self.schematic_fill_hex.clone()),
+            InputSlot::FillHex => (
+                locale::t("no colour", "无颜色"),
+                self.schematic_fill_hex.clone(),
+            ),
             InputSlot::FontSearch => (locale::t("Search fonts", "搜索字体"), String::new()),
         }
     }
@@ -664,8 +699,13 @@ impl SeexUi {
             }
             InputSlot::FillHex => {
                 if let Some(color) = parse_hex_color(&value) {
-                    self.schematic_fill_color = color;
+                    self.schematic_fill_color = Some(color);
                     self.schematic_fill_hex = color_to_hex(color);
+                    self.color_sync[ColorSlot::Fill.index()] = true;
+                } else if value.trim().is_empty() {
+                    // An emptied box is the "no colour" choice written out.
+                    self.schematic_fill_color = None;
+                    self.schematic_fill_hex = String::new();
                     self.color_sync[ColorSlot::Fill.index()] = true;
                 }
             }
@@ -1120,7 +1160,7 @@ pub fn snapshot_config(
     show_donate: bool,
     theme: String,
     schematic_stroke_color: [u8; 3],
-    schematic_fill_color: [u8; 3],
+    schematic_fill_color: Option<[u8; 3]>,
     latin_font: Option<String>,
     han_font: Option<String>,
 ) -> AppConfig {

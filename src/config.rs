@@ -67,7 +67,9 @@ pub struct ExportConfig {
     pub force: bool,
     #[serde(alias = "schematic_color")]
     pub schematic_stroke_color: [u8; 3],
-    pub schematic_fill_color: [u8; 3],
+    /// `None` is the "no colour" choice: the symbol body is exported without a
+    /// fill rather than painted in some default.
+    pub schematic_fill_color: Option<[u8; 3]>,
 }
 
 impl Default for ExportConfig {
@@ -86,7 +88,7 @@ impl Default for ExportConfig {
             force: false,
             // Preserve the existing Altium symbol colors as the initial choices.
             schematic_stroke_color: [11, 56, 104],
-            schematic_fill_color: [255, 255, 224],
+            schematic_fill_color: Some([255, 255, 224]),
         }
     }
 }

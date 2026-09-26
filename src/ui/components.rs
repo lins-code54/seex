@@ -539,19 +539,22 @@ pub fn progress_bar(value: f32, message: impl Into<SharedString>) -> impl IntoEl
 ///
 /// The picker is the kit's [`ColorPickerState`]: it owns the palette, the H/S/L
 /// sliders and the commit events, so the page only has to render the trigger
-/// and hand the chosen colour back through that state's change event.
+/// and hand the chosen colour back through that state's change event. A `None`
+/// colour is the "no colour" choice: the swatch shows the slash symbol, and
+/// `none` — the candidate for it in the palette — is drawn by the page, which
+/// owns what "no colour" means for that slot.
 pub fn color_setting(
     id: &'static str,
     label: impl Into<SharedString>,
-    color: [u8; 3],
+    color: Option<[u8; 3]>,
     picker: &Entity<ColorPickerState>,
     input: &Entity<InputState>,
+    none: Option<Stateful<Div>>,
     cx: &mut App,
 ) -> impl IntoElement {
-    let swatch = theme::hsla_of(color);
     let dot = ColorDot {
         id: id.into(),
-        color: swatch,
+        color: color.map(theme::hsla_of),
         selected: false,
     };
 
@@ -571,7 +574,7 @@ pub fn color_setting(
                     open_picker.update(cx, |state, cx| state.set_open(open, cx));
                 })
                 .trigger(dot)
-                .child(color_picker_panel(id, picker, cx)),
+                .child(color_picker_panel(id, picker, color, none, cx)),
         )
         .child(
             div()
@@ -581,7 +584,7 @@ pub fn color_setting(
 }
 
 /// The shared dot both colour settings use: a round swatch that opens the
-/// picker popup.
+/// picker popup, or the "no colour" symbol when the slot has no colour.
 ///
 /// [`Popover`] wants a [`Selectable`] trigger, and the kit's own swatch is not
 /// one — it carries radio semantics for a palette instead. This wrapper draws
@@ -589,7 +592,7 @@ pub fn color_setting(
 /// state, which is what the popover draws the ring from.
 struct ColorDot {
     id: ElementId,
-    color: Hsla,
+    color: Option<Hsla>,
     selected: bool,
 }
 
@@ -608,6 +611,13 @@ impl IntoElement for ColorDot {
     type Element = AnyElement;
 
     fn into_element(self) -> AnyElement {
+        let Some(color) = self.color else {
+            return div()
+                .id(self.id)
+                .cursor_pointer()
+                .child(none_color_icon(26.0, self.selected))
+                .into_any_element();
+        };
         let ring = if self.selected {
             theme::primary()
         } else {
@@ -618,13 +628,62 @@ impl IntoElement for ColorDot {
             .w(px(26.0))
             .h(px(26.0))
             .rounded_full()
-            .bg(self.color)
+            .bg(color)
             .border(px(if self.selected { 2.0 } else { 1.0 }))
             .border_color(ring)
             .cursor_pointer()
             .hover(|style| style.border_color(theme::primary()))
             .into_any_element()
     }
+}
+
+/// The symbol every palette uses for "none": a rounded square with a diagonal
+/// through it, drawn rather than shipped as an SVG so it takes its colours from
+/// the theme and matches the swatches it sits among.
+pub fn none_color_icon(size: f32, selected: bool) -> impl IntoElement {
+    let edge = if selected { 2.0 } else { 1.0 };
+    let border = if selected {
+        theme::primary()
+    } else {
+        theme::subtle_border()
+    };
+    let slash = theme::text_color();
+    let inset = (size * 0.28).round();
+    canvas(
+        move |bounds, _window, _cx| bounds,
+        move |bounds, _bounds, window, _cx| {
+            window.paint_quad(PaintQuad {
+                bounds,
+                corner_radii: Corners::all(px(theme::RADIUS_SM)),
+                background: theme::field_bg().into(),
+                border_widths: Edges::all(px(edge)),
+                border_color: border.into(),
+                border_style: BorderStyle::default(),
+            });
+            let mut diagonal = PathBuilder::stroke(px(edge + 0.8));
+            diagonal.move_to(bounds.origin + point(px(inset), bounds.size.height - px(inset)));
+            diagonal.line_to(bounds.origin + point(bounds.size.width - px(inset), px(inset)));
+            if let Ok(path) = diagonal.build() {
+                window.paint_path(path, slash);
+            }
+        },
+    )
+    .w(px(size))
+    .h(px(size))
+}
+
+/// The clickable "no colour" candidate for a picker's palette: the same symbol
+/// on a swatch-sized tile, which is what the page wires its own meaning to.
+pub fn none_color_candidate(
+    id: impl Into<ElementId>,
+    selected: bool,
+    on_click: impl Fn(&ClickEvent, &mut Window, &mut App) + 'static,
+) -> Stateful<Div> {
+    div()
+        .id(id)
+        .cursor_pointer()
+        .child(none_color_icon(24.0, selected))
+        .on_click(on_click)
 }
 
 /// The colours offered under the sliders: the neutrals and the two Altium
@@ -665,13 +724,11 @@ const COLOR_PRESETS: [[u8; 3]; 24] = [
 fn color_picker_panel(
     id: &'static str,
     picker: &Entity<ColorPickerState>,
+    color: Option<[u8; 3]>,
+    none: Option<Stateful<Div>>,
     cx: &mut App,
 ) -> AnyElement {
     let sliders = picker.read(cx).sliders().clone();
-    let current = picker
-        .read(cx)
-        .displayed_color()
-        .unwrap_or_else(|| theme::hsla_of([0, 0, 0]));
 
     let slider_row = |title: &'static str, state: &Entity<SliderState>| {
         div()
@@ -690,16 +747,21 @@ fn color_picker_panel(
             .child(div().flex_1().child(Slider::new(state)))
     };
 
-    let mut presets = div()
+    let mut palette = div()
         .flex()
         .flex_row()
         .flex_wrap()
         .gap(px(6.0))
         .w(px(238.0));
+    // The "no colour" candidate leads the palette, where a palette keeps it.
+    // While it is the choice, no colour preset is marked as selected.
+    if let Some(none) = none {
+        palette = palette.child(none);
+    }
     for (index, preset) in COLOR_PRESETS.iter().enumerate() {
         let swatch = theme::hsla_of(*preset);
         let picker = picker.clone();
-        presets = presets.child(
+        palette = palette.child(
             ColorSwatch::new(SharedString::from(format!("{id}-preset-{index}")), swatch)
                 .bg(swatch)
                 .w(px(24.0))
@@ -707,7 +769,7 @@ fn color_picker_panel(
                 .rounded(px(theme::RADIUS_SM))
                 .border(px(1.0))
                 .border_color(theme::subtle_border())
-                .selected(current == swatch)
+                .selected(color == Some(*preset))
                 .cursor_pointer()
                 .on_click(move |color, _event, window, cx| {
                     picker.update(cx, |state, cx| state.select_color(color, window, cx));
@@ -722,6 +784,6 @@ fn color_picker_panel(
         .child(slider_row("H", sliders.hue()))
         .child(slider_row("S", sliders.saturation()))
         .child(slider_row("L", sliders.lightness()))
-        .child(presets)
+        .child(palette)
         .into_any_element()
 }
