@@ -1072,10 +1072,17 @@ impl SeexUi {
             Page::Font => self.font_page(window, cx),
         };
 
+        // A flex column, not the block default: a page that fills the space it
+        // is given does it with `flex_1`, and in a block container that does
+        // nothing at all — the page then grows to its content and pushes its
+        // bottom, and the status bar, past the window.
         div()
             .id("central-scroll")
+            .flex()
+            .flex_col()
             .flex_1()
             .w_full()
+            .min_h(px(0.0))
             .bg(theme::app_bg())
             .px(px(24.0))
             .py(px(18.0))

@@ -205,9 +205,14 @@ pub fn section_with_min_height(min_height: f32, body: impl IntoElement) -> impl 
 }
 
 /// The same panel stretched to fill what is left of a column, for the one panel
-/// on a page whose content grows — the Export page keeps its failed ids in one.
+/// on a page whose content grows — the Export page keeps its failed ids in one
+/// and the History page its log.
+///
+/// `min_h(0)` matters: a flex item will not shrink below its content by default,
+/// so without it a long list pushed the panel past the bottom of the window and
+/// the panel's own outline was clipped instead of the list scrolling inside it.
 pub fn section_fill(body: impl IntoElement) -> Div {
-    panel(0.0, body).flex_1()
+    panel(0.0, body).flex_1().min_h(px(0.0))
 }
 
 fn panel(min_height: f32, body: impl IntoElement) -> Div {

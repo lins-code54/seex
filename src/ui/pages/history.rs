@@ -47,24 +47,35 @@ impl SeexUi {
             .flex_col()
             .w_full()
             .h_full()
+            // Every link in the chain has to be allowed to shrink, or the one
+            // that is not pushes the panel past the bottom of the window.
+            .min_h(px(0.0))
             .gap(px(10.0))
             .child(header);
 
+        // The entries live in a box of their own, and the box is always drawn:
+        // the list scrolls inside it, so however short the window is the box's
+        // outline — including its bottom edge — stays on screen instead of the
+        // last row being cut off by the window frame.
+        let mut list = div()
+            .id("history-list")
+            .flex()
+            .flex_col()
+            .w_full()
+            .flex_1()
+            .min_h(px(0.0))
+            .p(px(8.0))
+            .rounded(px(theme::RADIUS_MD))
+            .border(px(1.0))
+            .border_color(theme::subtle_border())
+            .overflow_y_scroll();
+
         if history.is_empty() {
-            body = body.child(components::empty_state(locale::t(
+            list = list.child(components::empty_state(locale::t(
                 "No history yet",
                 "暂无历史记录",
             )));
         } else {
-            let mut list = div()
-                .id("history-list")
-                .flex()
-                .flex_col()
-                .w_full()
-                .flex_1()
-                .min_h(px(0.0))
-                .overflow_y_scroll();
-
             for (index, (time, content)) in history.iter().enumerate() {
                 let preview = first_line(content, 110);
                 let mono = self.mono_family.clone();
@@ -127,8 +138,8 @@ impl SeexUi {
                     )),
                 );
             }
-            body = body.child(list);
         }
+        body = body.child(list);
 
         // The panel takes the height the page has, so the list below the header
         // is as tall as the window allows rather than a fixed 495px.
