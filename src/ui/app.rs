@@ -1099,52 +1099,94 @@ impl SeexUi {
             })
             .unwrap_or_default();
 
-        // Three measured-equal columns: not left to flex-grow, which does not
-        // centre, so the middle column lands exactly on the window centre.
+        // The two ends are sized to their own text, so neither can be clipped,
+        // and they are kept the same width so the middle column still lands
+        // exactly on the window centre. The middle then takes all the room that
+        // is left, which is more than an equal third gave it.
+        //
+        // Sizing by a fixed third was the bug: a wider font or a narrower window
+        // pushed the copyright past its column, and right-aligning then clipped
+        // the start of the text — "yright (c) Ref42...".
         const PADDING: f32 = 14.0;
         const GAP: f32 = 16.0;
-        let width = window.viewport_size().width.as_f32();
-        let column = ((width - PADDING * 2.0 - GAP * 2.0) / 3.0).max(120.0);
+        // What the middle column keeps when the two ends ask for everything: the
+        // notice is the point of the bar, so it never collapses to nothing.
+        const MIN_MIDDLE: f32 = 160.0;
+        const COPYRIGHT: &str = "Copyright (c) Ref42. All rights reserved.";
+        let font_size = px(theme::scaled_font(24.0));
+        let font = fonts::ui_font(self.font_latin.clone(), self.han_fallbacks.clone());
+        let text_width = |text: &str| {
+            let run = TextRun {
+                len: text.len(),
+                font: font.clone(),
+                color: theme::text_color().into(),
+                background_color: None,
+                underline: None,
+                strikethrough: None,
+            };
+            window
+                .text_system()
+                .shape_line(
+                    SharedString::from(text.to_string()),
+                    font_size,
+                    std::slice::from_ref(&run),
+                    None,
+                )
+                .width()
+                .as_f32()
+        };
+        // The ends share what the middle can spare, so a wide font or a narrow
+        // window cannot collapse the notice away.
+        let available =
+            (window.viewport_size().width.as_f32() - PADDING * 2.0 - GAP * 2.0).max(0.0);
+        let side = text_width(&counts)
+            .max(text_width(COPYRIGHT))
+            .ceil()
+            .min(((available - MIN_MIDDLE) / 2.0).max(64.0))
+            + 2.0;
 
         div()
             .flex()
             .flex_row()
             .items_center()
-            .gap(px(16.0))
+            .gap(px(GAP))
             .w_full()
             .h(px(52.0))
-            .px(px(14.0))
+            .px(px(PADDING))
             .py(px(5.0))
             .bg(theme::surface())
             .border_t(px(1.0))
             .border_color(theme::border())
             .text_size(px(theme::scaled_font(24.0)))
             .text_color(theme::text_color())
-            .child(div().w(px(column)).flex_shrink_0().overflow_hidden().text_ellipsis().child(counts))
             .child(
-                // Measured-equal sides put this column on the window centre, so
-                // a notice always lands in the middle of the bar.
                 div()
-                    .w(px(column))
+                    .w(px(side))
                     .flex_shrink_0()
+                    .overflow_hidden()
+                    .text_ellipsis()
+                    .child(counts),
+            )
+            .child(
+                // Equal ends put this column on the window centre, so a notice
+                // always lands in the middle of the bar.
+                div()
+                    .flex_1()
                     .flex()
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
                     .child(self.status_message(cx)),
             )
-            .child(div().flex_1())
             .child(
                 div()
-                    .w(px(column))
+                    .w(px(side))
                     .flex_shrink_0()
-                    .flex()
-                    .flex_row()
-                    .justify_end()
                     .overflow_hidden()
                     .text_ellipsis()
+                    .text_align(TextAlign::Right)
                     .text_color(theme::muted())
-                    .child("Copyright (c) Ref42. All rights reserved."),
+                    .child(COPYRIGHT),
             )
     }
 
