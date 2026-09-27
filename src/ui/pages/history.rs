@@ -1,15 +1,15 @@
 //! The History page: what the clipboard monitor has seen, newest first.
 //!
-//! Ported from `SeexApp::history_page` in `src/main.rs`: the same panel, the
-//! same `list_height(ui, 0.55, 6, 52.0)` list height against a 900px window, and
-//! the same per-row Copy/Delete pair.
+//! Ported from `SeexApp::history_page` in `src/main.rs`: the same panel and the
+//! same per-row Copy/Delete pair. The list used to be pinned to 495px whatever
+//! the window was, which showed nine entries in a page with room for twice that;
+//! it now takes the height the page has, so a taller window simply shows more.
 
 use gpui_kit::*;
 
 use crate::ui::app::{SeexUi, copy_to_clipboard, first_line};
 use crate::ui::{components, locale, theme};
 
-const HISTORY_LIST_HEIGHT: f32 = 495.0;
 const BODY: f32 = 20.0;
 
 impl SeexUi {
@@ -46,6 +46,7 @@ impl SeexUi {
             .flex()
             .flex_col()
             .w_full()
+            .h_full()
             .gap(px(10.0))
             .child(header);
 
@@ -60,7 +61,8 @@ impl SeexUi {
                 .flex()
                 .flex_col()
                 .w_full()
-                .h(px(HISTORY_LIST_HEIGHT))
+                .flex_1()
+                .min_h(px(0.0))
                 .overflow_y_scroll();
 
             for (index, (time, content)) in history.iter().enumerate() {
@@ -128,6 +130,8 @@ impl SeexUi {
             body = body.child(list);
         }
 
-        components::section(body).into_any_element()
+        // The panel takes the height the page has, so the list below the header
+        // is as tall as the window allows rather than a fixed 495px.
+        components::section_fill(body).into_any_element()
     }
 }
