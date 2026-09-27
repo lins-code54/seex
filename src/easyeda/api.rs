@@ -18,6 +18,15 @@ const UPSTREAM_BLOCK_COOLDOWN_MS: u64 = 45_000;
 const COMPONENT_REQUEST_INTERVAL_MS: u64 = 150;
 const MODEL_REQUEST_INTERVAL_MS: u64 = 150;
 const MODEL_DOWNLOAD_BASE_URL: &str = "https://modules.lceda.cn/qAxj6KHrDKw4blvCG8QJPs7Y";
+/// How many downloaded models the cache keeps.
+///
+/// The models are the largest thing a run holds: a 25-part batch of them was
+/// 40MB on disk, and every one of them stayed in memory until the batch ended,
+/// so the peak followed the size of the batch rather than the handful being
+/// worked on at once. A model is asked for once, or twice when a bundle writes
+/// it as a file and embeds it as well, so a few entries are enough to keep that
+/// from downloading twice, and the rest are released as they are finished with.
+const CACHED_MODELS: usize = 4;
 type DownloadCell = Arc<OnceCell<std::result::Result<Arc<Vec<u8>>, String>>>;
 type DownloadCache = Arc<Mutex<HashMap<String, DownloadCell>>>;
 
@@ -430,11 +439,35 @@ impl EasyedaApi {
             .clone();
 
         match result {
-            Ok(bytes) => Ok(bytes.as_ref().clone()),
+            Ok(bytes) => {
+                self.trim_step_cache(uuid).await;
+                Ok(bytes.as_ref().clone())
+            }
             Err(message) => {
                 self.step_cache.lock().await.remove(uuid);
                 Err(EasyedaError::InvalidData(message).into())
             }
+        }
+    }
+
+    /// Keeps the cache to [`CACHED_MODELS`] finished downloads, oldest first, so
+    /// a long batch does not hold every model it has seen. `keep` is the one that
+    /// was just used, and anything still downloading is left alone.
+    async fn trim_step_cache(&self, keep: &str) {
+        let mut cache = self.step_cache.lock().await;
+        if cache.len() <= CACHED_MODELS {
+            return;
+        }
+        let stale: Vec<String> = cache
+            .iter()
+            .filter(|(uuid, cell)| {
+                uuid.as_str() != keep && cell.get().is_some_and(|done| done.is_ok())
+            })
+            .map(|(uuid, _)| uuid.clone())
+            .take(cache.len() - CACHED_MODELS)
+            .collect();
+        for uuid in stale {
+            cache.remove(&uuid);
         }
     }
 
