@@ -204,7 +204,13 @@ pub fn section_with_min_height(min_height: f32, body: impl IntoElement) -> impl 
     panel(min_height, body)
 }
 
-fn panel(min_height: f32, body: impl IntoElement) -> impl IntoElement {
+/// The same panel stretched to fill what is left of a column, for the one panel
+/// on a page whose content grows — the Export page keeps its failed ids in one.
+pub fn section_fill(body: impl IntoElement) -> Div {
+    panel(0.0, body).flex_1()
+}
+
+fn panel(min_height: f32, body: impl IntoElement) -> Div {
     let element = div()
         .flex()
         .flex_col()

@@ -14,6 +14,7 @@ use crate::ui::locale::Lang;
 use crate::ui::{components, locale, theme};
 
 const BODY: f32 = 20.0;
+const SMALL: f32 = 14.0;
 
 /// The five numbers `render_export_metrics` scraped out of an export result.
 fn metric_values(result: &str) -> Vec<(&'static str, String)> {
@@ -61,10 +62,123 @@ impl SeexUi {
             .flex()
             .flex_col()
             .w_full()
-            .child(self.export_run_panel(cx))
+            .h_full()
+            // The two panels above keep their own height; the failure list below
+            // is the one that gives way when the window is short.
+            .child(div().flex_shrink_0().child(self.export_run_panel(cx)))
             .child(div().h(px(10.0)))
-            .child(self.export_settings_panel(window, cx))
+            .child(
+                div()
+                    .flex_shrink_0()
+                    .child(self.export_settings_panel(window, cx)),
+            )
+            .child(div().h(px(10.0)))
+            .child(self.failed_ids_panel(cx))
             .into_any_element()
+    }
+
+    /// The failed components of the last run, given the bottom of the page.
+    ///
+    /// They used to be one comma-joined line inside the run panel, which cut
+    /// them off as soon as there were a few; here each id is a chip of its own
+    /// and the list scrolls rather than clipping.
+    fn failed_ids_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
+        let ids = self.last_failed_ids();
+        let count = ids.len();
+        let accent = if count > 0 {
+            theme::danger()
+        } else {
+            theme::muted()
+        };
+
+        let header = div()
+            .flex()
+            .flex_row()
+            .items_center()
+            .gap(px(10.0))
+            .w_full()
+            .child(
+                div()
+                    .text_size(px(BODY))
+                    .text_color(theme::text_color())
+                    .child(locale::t("Failed IDs", "失败 ID")),
+            )
+            .child(components::count_chip(count, accent))
+            .child(div().flex_1())
+            .child(components::button(
+                "copy-failed-ids",
+                locale::t("Copy IDs", "复制 ID"),
+                count > 0,
+                cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                    this.copy_failed_ids(cx);
+                }),
+            ));
+
+        let mut body = div()
+            .flex()
+            .flex_col()
+            .gap(px(10.0))
+            .w_full()
+            .child(header)
+            .child(
+                div()
+                    .text_size(px(SMALL))
+                    .text_color(theme::muted())
+                    .child(locale::t(
+                        "Components the last export could not write.",
+                        "上次导出未能写入的元件。",
+                    )),
+            );
+
+        if ids.is_empty() {
+            body = body.child(components::empty_state(locale::t(
+                "Nothing failed in the last export.",
+                "上次导出没有失败项。",
+            )));
+        } else {
+            let mut chips = div().flex().flex_row().flex_wrap().gap(px(8.0)).w_full();
+            for id in &ids {
+                chips = chips.child(components::chip(id.clone(), theme::danger()));
+            }
+            body = body.child(
+                div()
+                    .id("failed-ids-scroll")
+                    .flex_1()
+                    .min_h(px(0.0))
+                    .w_full()
+                    .overflow_y_scroll()
+                    .child(chips),
+            );
+        }
+
+        components::section_fill(body).into_any_element()
+    }
+
+    /// The ids the last export failed on.
+    fn last_failed_ids(&self) -> Vec<String> {
+        self.state
+            .lock()
+            .ok()
+            .and_then(|state| state.export_last_result.clone())
+            .map(|result| failed_ids(&result))
+            .unwrap_or_default()
+    }
+
+    /// Copies the failed ids, the way the Monitor page copies the matched ones.
+    fn copy_failed_ids(&mut self, cx: &mut Context<Self>) {
+        let ids = self.last_failed_ids();
+        if ids.is_empty() {
+            self.show_toast_info(locale::t("No failed IDs to copy", "没有可复制的失败 ID"));
+        } else {
+            crate::ui::app::copy_to_clipboard(&ids.join("\n"));
+            let count = ids.len();
+            let message = match locale::lang() {
+                Lang::En => format!("Copied {count} failed IDs"),
+                Lang::Zh => format!("已复制 {count} 个失败 ID"),
+            };
+            self.show_toast_success(message);
+        }
+        cx.notify();
     }
 
     fn export_run_panel(&mut self, cx: &mut Context<Self>) -> AnyElement {
@@ -131,22 +245,9 @@ impl SeexUi {
                 } else {
                     theme::text_color()
                 };
-                let clickable = key == "Failed" && value != "0";
-                let text = format!("{label} {value}");
-                if clickable {
-                    row = row.child(
-                        div()
-                            .id("failed-ids-pill")
-                            .cursor_pointer()
-                            .on_click(cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                                this.show_failed_ids = !this.show_failed_ids;
-                                cx.notify();
-                            }))
-                            .child(components::pill_text(text, color)),
-                    );
-                } else {
-                    row = row.child(components::pill_text(text, color));
-                }
+                // A plain count now: the ids themselves have their own panel at
+                // the bottom of the page.
+                row = row.child(components::pill_text(format!("{label} {value}"), color));
             }
         }
 
@@ -182,25 +283,6 @@ impl SeexUi {
         ));
 
         body = body.child(row);
-
-        if self.show_failed_ids {
-            if let Some(result) = &result {
-                let ids = failed_ids(result);
-                if !ids.is_empty() {
-                    body = body.child(
-                        div()
-                            .w_full()
-                            .p(px(10.0))
-                            .rounded(px(4.0))
-                            .bg(theme::chip_bg(theme::danger()))
-                            .text_size(px(BODY))
-                            .font_family(self.mono_family.clone())
-                            .text_color(theme::danger())
-                            .child(ids.join(", ")),
-                    );
-                }
-            }
-        }
 
         components::section(body).into_any_element()
     }

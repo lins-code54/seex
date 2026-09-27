@@ -161,7 +161,6 @@ pub struct SeexUi {
     next_update_check: Instant,
     pub show_donate: bool,
     pub theme_preset: String,
-    pub show_failed_ids: bool,
     pub schematic_stroke_color: [u8; 3],
     /// `None` is the "no colour" fill: the symbol body keeps its outline and is
     /// exported with a transparent area.
@@ -450,7 +449,6 @@ impl SeexUi {
             next_update_check: Instant::now() + UPDATE_CHECK_DELAY,
             show_donate: config.show_donate,
             theme_preset: theme::normalize_theme_name(&config.theme),
-            show_failed_ids: false,
             schematic_stroke_color: config.export.schematic_stroke_color,
             schematic_fill_color: config.export.schematic_fill_color,
             schematic_stroke_hex: color_to_hex(config.export.schematic_stroke_color),
@@ -1084,7 +1082,7 @@ impl SeexUi {
             .child(page)
     }
 
-    fn status_bar(&self, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn status_bar(&self, window: &Window) -> impl IntoElement {
         let counts = self
             .state
             .lock()
@@ -1176,7 +1174,7 @@ impl SeexUi {
                     .items_center()
                     .justify_center()
                     .overflow_hidden()
-                    .child(self.status_message(cx)),
+                    .child(self.status_message()),
             )
             .child(
                 div()
@@ -1194,7 +1192,7 @@ impl SeexUi {
     /// one, otherwise the hint for the control under the pointer, otherwise the
     /// waiting update. The first two use the same filled box; the update is the
     /// same box again, but it takes a click.
-    fn status_message(&self, cx: &mut Context<Self>) -> AnyElement {
+    fn status_message(&self) -> AnyElement {
         let (text, accent) = match self.toast_state.message {
             Some(ToastMessage::Success(ref message)) => (message.clone(), theme::success()),
             Some(ToastMessage::Error(ref message)) => (message.clone(), theme::danger()),
@@ -1236,7 +1234,7 @@ impl Render for SeexUi {
             .bg(theme::app_bg())
             .child(self.top_bar(cx))
             .child(self.central(window, cx))
-            .child(self.status_bar(window, cx))
+            .child(self.status_bar(window))
     }
 }
 
