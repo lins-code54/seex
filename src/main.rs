@@ -19,6 +19,7 @@ mod lceda;
 mod lcsc;
 mod metadata;
 mod monitor;
+mod progress;
 mod step_model;
 mod ui;
 mod util;

@@ -158,13 +158,9 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
     };
 
     if let Some(progress) = &options.progress {
-        // The same shape the Altium batch uses: name what is happening rather
-        // than leaving the bar with nothing to say but a dash.
-        progress(
-            skipped,
-            summary.total,
-            &format!("Starting {} components", ids.len()),
-        );
+        // The words come from `crate::progress`, the same ones the Altium batch
+        // uses: the two targets report a run the same way.
+        progress(skipped, summary.total, &crate::progress::starting(ids.len()));
     }
 
     if ids.is_empty() {
@@ -198,7 +194,7 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
                 progress(
                     done.load(Ordering::Relaxed),
                     total,
-                    &format!("Fetching {id}"),
+                    &crate::progress::fetching(&id),
                 );
             }
             let result = match tokio::time::timeout(
@@ -239,7 +235,7 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
                     progress(
                         summary.success + summary.failed + summary.skipped,
                         summary.total,
-                        &format!("Exported {id}"),
+                        &crate::progress::exported(&id, Some(&exported.component_name)),
                     );
                 }
             }
@@ -254,7 +250,7 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
                     progress(
                         summary.success + summary.failed + summary.skipped,
                         summary.total,
-                        &format!("Failed {id}"),
+                        &crate::progress::failed(&id),
                     );
                 }
             }

@@ -324,21 +324,21 @@ impl BatchProgress {
     fn record_success(&mut self, id: &str, detail: Option<&str>) {
         self.completed = (self.completed + 1).min(self.total);
         self.success += 1;
-        self.last_subject = Some(format_subject(id, detail));
+        self.last_subject = Some(crate::progress::exported(id, detail));
         self.render();
     }
 
     fn record_skip(&mut self, id: &str, reason: &str) {
         self.completed = (self.completed + 1).min(self.total);
         self.skipped += 1;
-        self.last_subject = Some(format_subject(id, None));
+        self.last_subject = Some(crate::progress::skipped(id));
         self.note(format!("SKIP {id}: {reason}"));
     }
 
     fn record_failure(&mut self, id: &str, error: &AppError) {
         self.completed = (self.completed + 1).min(self.total);
         self.failed += 1;
-        self.last_subject = Some(format_subject(id, None));
+        self.last_subject = Some(crate::progress::failed(id));
         self.note(format!("FAILED {id}: {error}"));
     }
 
@@ -378,20 +378,19 @@ impl BatchProgress {
         self.draw_status_line(&message);
     }
 
-    /// What to say next to `current/total` in the window.
+    /// What to say next to `current/total` in the window, in the words both
+    /// targets use.
     ///
     /// The run used to pass the last *finished* component here, so the bar read
     /// `0/11: -` until the first one landed. A component being fetched is worth
     /// naming, and so is a run that has started but finished nothing yet.
     fn subject(&self) -> String {
-        let active = self.active_count();
-        match (self.queue.get(self.completed), active) {
-            (Some(id), 1) => format!("Fetching {id}"),
-            (Some(id), more) if more > 1 => format!("Fetching {id} (+{} more)", more - 1),
-            _ => self
+        match self.queue.get(self.completed) {
+            Some(id) => crate::progress::fetching(id),
+            None => self
                 .last_subject
                 .clone()
-                .unwrap_or_else(|| format!("Starting {} components", self.total)),
+                .unwrap_or_else(|| crate::progress::starting(self.total)),
         }
     }
 
@@ -1278,17 +1277,6 @@ fn batch_mode_label(options: &BatchOptions) -> &'static str {
     }
 }
 
-fn format_subject(id: &str, detail: Option<&str>) -> String {
-    let mut text = match detail {
-        Some(detail) if !detail.trim().is_empty() => format!("{id} {detail}"),
-        _ => id.to_string(),
-    };
-    if text.chars().count() > 52 {
-        text = format!("{}...", text.chars().take(49).collect::<String>());
-    }
-    text
-}
-
 fn format_elapsed(seconds: u64) -> String {
     let hours = seconds / 3_600;
     let minutes = (seconds % 3_600) / 60;
@@ -1303,7 +1291,7 @@ fn format_elapsed(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchOptions, BatchProgress, ExportTargets, format_elapsed, format_subject, parse_lcsc_ids,
+        BatchOptions, BatchProgress, ExportTargets, format_elapsed, parse_lcsc_ids,
         reject_existing_merged_outputs, resolve_library_name,
     };
     use std::fs;
@@ -1374,11 +1362,6 @@ mod tests {
     }
 
     #[test]
-    fn formats_progress_subject_with_component_name() {
-        assert_eq!(format_subject("C2040", Some("RP2040")), "C2040 RP2040");
-    }
-
-    #[test]
     fn formats_elapsed_time_without_hours() {
         assert_eq!(format_elapsed(65), "01:05");
     }
@@ -1404,18 +1387,19 @@ mod tests {
 
         // This used to read `0/3: -`: the subject only ever held a finished
         // component, so the bar said nothing until the first one landed.
-        assert_eq!(progress.subject(), "Fetching C1 (+1 more)");
+        assert_eq!(progress.subject(), "Fetching C1");
 
         progress.completed = 1;
-        assert_eq!(progress.subject(), "Fetching C2 (+1 more)");
+        assert_eq!(progress.subject(), "Fetching C2");
 
         progress.completed = 2;
         assert_eq!(progress.subject(), "Fetching C3");
 
-        // With nothing left in flight, the last component is the useful line.
+        // With nothing left in flight, the last component is the useful line,
+        // in the words the KiCad batch uses for the same step.
         progress.completed = 3;
-        progress.last_subject = Some("C3 RP2040".to_string());
-        assert_eq!(progress.subject(), "C3 RP2040");
+        progress.record_success("C3", Some("RP2040"));
+        assert_eq!(progress.subject(), "Exported C3 RP2040");
     }
 
     #[test]
