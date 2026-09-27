@@ -42,6 +42,9 @@ pub struct MonitorState {
     pub last_content: String,
     pub history: Vec<(String, String)>,
     pub matched: Vec<MatchedEntry>,
+    /// Set when the user clears everything: what is on the clipboard at that
+    /// moment was cleared by them and must not be imported again.
+    pub skip_current_clipboard: bool,
     pub keyword: String,
     pub initialized: bool,
     pub monitoring: bool,
@@ -72,6 +75,7 @@ impl MonitorState {
             last_content: String::new(),
             history: Vec::new(),
             matched: Vec::new(),
+            skip_current_clipboard: false,
             keyword: String::new(),
             initialized: false,
             monitoring: true,
@@ -154,6 +158,14 @@ impl MonitorState {
 
         let trimmed = content.trim().to_string();
         if trimmed.is_empty() {
+            return false;
+        }
+
+        if self.skip_current_clipboard {
+            // This is what the user cleared, not something new: record it as
+            // seen and import nothing.
+            self.skip_current_clipboard = false;
+            self.last_content = trimmed;
             return false;
         }
 
@@ -351,13 +363,24 @@ impl MonitorState {
         self.history.clear();
         self.matched.clear();
         self.last_content.clear();
-        self.initialized = false;
+        // The clipboard still holds whatever the user just cleared. The monitor
+        // reads it again on its next poll and would refill both lists within a
+        // moment — which is exactly what made Clear All look like it did
+        // nothing. Marking it as already seen is what makes the clear stick.
+        self.initialized = true;
+        self.skip_current_clipboard = true;
         self.match_debug_log.clear();
         self.export_last_result = None;
         self.export_running = false;
         self.export_progress = None;
         self.bom_last_result = None;
         self.bom_running = false;
+    }
+
+    /// Drops the import history, leaving the matched ids alone: the history is
+    /// the log of what was on the clipboard, the matches are what the user keeps.
+    pub fn clear_history(&mut self) {
+        self.history.clear();
     }
 
     pub fn get_unique_ids(&self) -> Vec<String> {
@@ -485,5 +508,42 @@ mod tests {
             )
         );
         assert_eq!(state.get_unique_ids(), vec!["C2927505", "C2040"]);
+    }
+
+    #[test]
+    fn clearing_keeps_the_clipboard_from_filling_the_lists_again() {
+        let mut state = MonitorState::new();
+
+        // The monitor reads the clipboard on every poll, so the same text comes
+        // back after a clear unless the clear marks it as seen.
+        assert!(state.process_clipboard_change("C2040".to_string()));
+        assert_eq!(state.get_unique_ids(), vec!["C2040"]);
+        assert_eq!(state.history.len(), 1);
+
+        state.clear_all();
+
+        assert!(!state.process_clipboard_change("C2040".to_string()));
+        assert!(!state.process_clipboard_change("C2040".to_string()));
+        assert!(state.matched.is_empty(), "matched must stay empty");
+        assert!(state.history.is_empty(), "history must stay empty");
+
+        // A genuinely new clipboard is imported as usual.
+        assert!(state.process_clipboard_change("C4242".to_string()));
+        assert_eq!(state.get_unique_ids(), vec!["C4242"]);
+    }
+
+    #[test]
+    fn clearing_the_history_leaves_the_matched_ids_alone() {
+        let mut state = MonitorState::new();
+        state.process_clipboard_change("C2040".to_string());
+
+        state.clear_history();
+
+        assert!(state.history.is_empty());
+        assert_eq!(state.get_unique_ids(), vec!["C2040"]);
+        assert!(
+            !state.process_clipboard_change("C2040".to_string()),
+            "the same clipboard is not imported twice"
+        );
     }
 }

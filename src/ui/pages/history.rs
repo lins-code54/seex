@@ -20,15 +20,34 @@ impl SeexUi {
             .map(|state| state.history.clone())
             .unwrap_or_default();
 
+        let header = components::section_header_inline(
+            locale::t("History", "历史"),
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.0))
+                .child(components::count_chip(history.len(), theme::primary()))
+                .child(components::button(
+                    "clear-history",
+                    locale::t("Delete all", "全部删除"),
+                    !history.is_empty(),
+                    cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        if let Ok(mut state) = this.state.lock() {
+                            state.clear_history();
+                        }
+                        this.show_toast_info(locale::t("History cleared", "历史已清空"));
+                        cx.notify();
+                    }),
+                )),
+        );
+
         let mut body = div()
             .flex()
             .flex_col()
             .w_full()
             .gap(px(10.0))
-            .child(components::section_header_inline(
-                locale::t("History", "历史"),
-                components::count_chip(history.len(), theme::primary()),
-            ));
+            .child(header);
 
         if history.is_empty() {
             body = body.child(components::empty_state(locale::t(
