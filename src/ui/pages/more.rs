@@ -101,7 +101,7 @@ impl SeexUi {
                 )
                 .child(components::selectable(
                     "toggle-donate",
-                    locale::t("Show donation QR codes", "显示赞助二维码"),
+                    locale::t("Show the donation code", "显示赞助二维码"),
                     self.show_donate,
                     cx.listener(|this, _event: &ClickEvent, _window, cx| {
                         this.show_donate = !this.show_donate;
@@ -217,26 +217,20 @@ impl SeexUi {
         components::section_with_min_height(MORE_PANEL_HEIGHT, body).into_any_element()
     }
 
-    /// The two QR codes, centred under the panels at a fixed height.
+    /// The donation code, centred under the panels at a fixed height. One image
+    /// carries both payment apps, so there is nothing to lay out side by side.
     fn donation_row(&self) -> AnyElement {
-        const HEIGHT: f32 = 300.0;
-        const GAP: f32 = 18.0;
+        const HEIGHT: f32 = 320.0;
         div()
             .flex()
             .flex_row()
             .items_start()
             .justify_center()
             .w_full()
-            .gap(px(GAP))
             .child(
-                img(self.donate_pay.clone())
+                img(self.donation_code.clone())
                     .h(px(HEIGHT))
-                    .w(px(HEIGHT * self.donate_pay_aspect)),
-            )
-            .child(
-                img(self.donate_wechat.clone())
-                    .h(px(HEIGHT))
-                    .w(px(HEIGHT * self.donate_wechat_aspect)),
+                    .w(px(HEIGHT * self.donation_aspect)),
             )
             .into_any_element()
     }

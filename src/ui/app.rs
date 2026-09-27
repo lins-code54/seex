@@ -144,11 +144,10 @@ pub enum HintArea {
 pub struct SeexUi {
     pub state: Arc<Mutex<MonitorState>>,
     _monitor: MonitorHandle,
-    /// The two donation QR codes, decoded once from the embedded JPEGs.
-    pub donate_pay: Arc<Image>,
-    pub donate_pay_aspect: f32,
-    pub donate_wechat: Arc<Image>,
-    pub donate_wechat_aspect: f32,
+    /// The donation code — one image covering both payment apps — decoded once
+    /// from the embedded PNG.
+    pub donation_code: Arc<Image>,
+    pub donation_aspect: f32,
     pub page: Page,
     pub pin_on_top: bool,
     pub show_matched: bool,
@@ -415,10 +414,10 @@ impl SeexUi {
                 .placeholder(locale::t("Example: C2040, C42", "示例：C2040, C42"))
         });
 
-        let (donate_pay, donate_pay_aspect) =
-            load_donation(include_bytes!("../../assets/donate/pay1.jpg").to_vec());
-        let (donate_wechat, donate_wechat_aspect) =
-            load_donation(include_bytes!("../../assets/donate/pay2.jpg").to_vec());
+        let (donation_code, donation_aspect) = load_donation(
+            include_bytes!("../../assets/donate/donation_code.png").to_vec(),
+            ImageFormat::Png,
+        );
 
         cx.spawn(async move |this, cx| loop {
             cx.background_executor()
@@ -437,10 +436,8 @@ impl SeexUi {
         Self {
             state,
             _monitor: monitor,
-            donate_pay,
-            donate_pay_aspect,
-            donate_wechat,
-            donate_wechat_aspect,
+            donation_code,
+            donation_aspect,
             page: Page::Monitor,
             pin_on_top: true,
             show_matched: true,
@@ -1353,16 +1350,13 @@ pub fn copy_to_clipboard(text: &str) {
     }
 }
 
-/// Decodes one of the embedded donation codes, keeping the aspect ratio the
-/// More page needs to size it.
-fn load_donation(bytes: Vec<u8>) -> (Arc<Image>, f32) {
+/// Decodes the embedded donation code, keeping the aspect ratio the More page
+/// needs to size it.
+fn load_donation(bytes: Vec<u8>, format: ImageFormat) -> (Arc<Image>, f32) {
     let aspect = image::load_from_memory(&bytes)
         .map(|image| image.width() as f32 / image.height().max(1) as f32)
         .unwrap_or(1.0);
-    (
-        Arc::new(Image::from_bytes(ImageFormat::Jpeg, bytes)),
-        aspect,
-    )
+    (Arc::new(Image::from_bytes(format, bytes)), aspect)
 }
 
 pub fn first_line(content: &str, max_chars: usize) -> String {
