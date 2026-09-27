@@ -158,7 +158,13 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
     };
 
     if let Some(progress) = &options.progress {
-        progress(skipped, summary.total, "Preparing KiCad export");
+        // The same shape the Altium batch uses: name what is happening rather
+        // than leaving the bar with nothing to say but a dash.
+        progress(
+            skipped,
+            summary.total,
+            &format!("Starting {} components", ids.len()),
+        );
     }
 
     if ids.is_empty() {

@@ -120,6 +120,7 @@ pub async fn export_batch(client: &LcedaClient, options: BatchOptions) -> Result
         batch_mode_label(&options),
         targets,
         &options.output,
+        pending.clone(),
         options.progress.clone(),
     );
     if summary.skipped > 0 {
@@ -263,6 +264,10 @@ struct BatchProgress {
     parallel: usize,
     started_at: Instant,
     last_subject: Option<String>,
+    /// The ids this run will export, in the order they are handed out. The bar
+    /// names the ones in flight from this and the counters, so nothing has to
+    /// report each part individually for the label to stay current.
+    queue: Vec<String>,
     last_render_width: usize,
     progress: Option<ExportProgressCallback>,
 }
@@ -274,6 +279,7 @@ impl BatchProgress {
         mode_label: &str,
         targets: ExportTargets,
         output: &Path,
+        queue: Vec<String>,
         progress_callback: Option<ExportProgressCallback>,
     ) -> Self {
         eprintln!(
@@ -292,6 +298,7 @@ impl BatchProgress {
             parallel: parallel.max(1),
             started_at: Instant::now(),
             last_subject: None,
+            queue,
             last_render_width: 0,
             progress: progress_callback,
         };
@@ -366,9 +373,26 @@ impl BatchProgress {
             format_elapsed(self.started_at.elapsed().as_secs())
         );
         if let Some(progress) = &self.progress {
-            progress(self.completed, self.total, last);
+            progress(self.completed, self.total, &self.subject());
         }
         self.draw_status_line(&message);
+    }
+
+    /// What to say next to `current/total` in the window.
+    ///
+    /// The run used to pass the last *finished* component here, so the bar read
+    /// `0/11: -` until the first one landed. A component being fetched is worth
+    /// naming, and so is a run that has started but finished nothing yet.
+    fn subject(&self) -> String {
+        let active = self.active_count();
+        match (self.queue.get(self.completed), active) {
+            (Some(id), 1) => format!("Fetching {id}"),
+            (Some(id), more) if more > 1 => format!("Fetching {id} (+{} more)", more - 1),
+            _ => self
+                .last_subject
+                .clone()
+                .unwrap_or_else(|| format!("Starting {} components", self.total)),
+        }
     }
 
     fn active_count(&self) -> usize {
@@ -429,6 +453,7 @@ async fn export_batch_merged(
         batch_mode_label(&options),
         targets,
         &options.output,
+        ids.clone(),
         options.progress.clone(),
     );
 
@@ -1278,7 +1303,7 @@ fn format_elapsed(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchOptions, ExportTargets, format_elapsed, format_subject, parse_lcsc_ids,
+        BatchOptions, BatchProgress, ExportTargets, format_elapsed, format_subject, parse_lcsc_ids,
         reject_existing_merged_outputs, resolve_library_name,
     };
     use std::fs;
@@ -1356,5 +1381,54 @@ mod tests {
     #[test]
     fn formats_elapsed_time_without_hours() {
         assert_eq!(format_elapsed(65), "01:05");
+    }
+
+    fn progress_with(queue: Vec<&str>, parallel: usize) -> BatchProgress {
+        BatchProgress::new(
+            queue.len(),
+            parallel,
+            "test",
+            ExportTargets {
+                schlib: true,
+                pcblib: true,
+            },
+            &PathBuf::from("out"),
+            queue.iter().map(|id| id.to_string()).collect(),
+            None,
+        )
+    }
+
+    #[test]
+    fn the_bar_names_the_component_being_fetched() {
+        let mut progress = progress_with(vec!["C1", "C2", "C3"], 2);
+
+        // This used to read `0/3: -`: the subject only ever held a finished
+        // component, so the bar said nothing until the first one landed.
+        assert_eq!(progress.subject(), "Fetching C1 (+1 more)");
+
+        progress.completed = 1;
+        assert_eq!(progress.subject(), "Fetching C2 (+1 more)");
+
+        progress.completed = 2;
+        assert_eq!(progress.subject(), "Fetching C3");
+
+        // With nothing left in flight, the last component is the useful line.
+        progress.completed = 3;
+        progress.last_subject = Some("C3 RP2040".to_string());
+        assert_eq!(progress.subject(), "C3 RP2040");
+    }
+
+    #[test]
+    fn a_lone_component_is_named_without_a_count() {
+        let progress = progress_with(vec!["C1"], 1);
+
+        assert_eq!(progress.subject(), "Fetching C1");
+    }
+
+    #[test]
+    fn a_run_with_nothing_to_do_says_so() {
+        let progress = progress_with(Vec::new(), 1);
+
+        assert_eq!(progress.subject(), "Starting 0 components");
     }
 }
