@@ -664,9 +664,18 @@ impl SeexUi {
 
         // The explanation for a toggle sits directly under the row, where it is
         // next to the button it describes and has room to be read in full.
-        if let Some((HintArea::ExportToggles, hint)) = self.hover_hint.clone() {
-            body = body.child(components::status_box(hint, theme::primary()));
-        }
+        //
+        // The slot is always here, empty or not. Adding and removing the box
+        // itself moved everything below it under the pointer, which took the
+        // pointer off the button, which removed the box again: the hint and the
+        // layout flickered for as long as the pointer rested on a toggle.
+        let hint = match self.hover_hint.clone() {
+            Some((HintArea::ExportToggles, hint)) => {
+                components::status_box(hint, theme::primary()).into_any_element()
+            }
+            _ => div().into_any_element(),
+        };
+        body = body.child(div().h(px(34.0)).w_full().child(hint));
 
         components::section(body).into_any_element()
     }
