@@ -3,6 +3,7 @@ use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use tokio::sync::Semaphore;
@@ -17,6 +18,11 @@ use crate::kicad::{
 use crate::lcsc::LcscClient;
 use crate::metadata::ResolvedMetadata;
 use crate::monitor::ExportProgressCallback;
+
+/// How long one component may take before the batch gives up on it. It covers
+/// the fetch, both conversions and the model download, so it is generous; it is
+/// the difference between one slow part and a batch that never ends.
+const COMPONENT_TIMEOUT: Duration = Duration::from_secs(180);
 
 #[derive(Debug, Clone)]
 pub struct KicadSingleOptions {
@@ -116,8 +122,7 @@ pub async fn export_kicad_single(options: KicadSingleOptions) -> Result<KicadBat
     export_kicad_batch(batch_options).await
 }
 
-pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatchSummary> {
-    validate_batch_options(&options)?;
+pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatchSummary> {    validate_batch_options(&options)?;
 
     let api = Arc::new(EasyedaApi::new());
     let lcsc_client = options.english_metadata.then(LcscClient::new).map(Arc::new);
@@ -162,6 +167,7 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
 
     let parallel = options.parallel.max(1).min(ids.len().max(1));
     let semaphore = Arc::new(Semaphore::new(parallel));
+    let done = Arc::new(AtomicUsize::new(skipped));
     let mut join_set = JoinSet::new();
 
     for id in ids {
@@ -171,20 +177,46 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
         let model_status = model_status.clone();
         let export_options = export_options.clone();
         let semaphore = semaphore.clone();
+        let progress = options.progress.clone();
+        let done = Arc::clone(&done);
+        let total = summary.total;
         join_set.spawn(async move {
             let _permit = semaphore
                 .acquire_owned()
                 .await
                 .expect("KiCad batch semaphore should remain open");
-            let result = export_one_kicad_component(
-                &api,
-                lcsc_client.as_deref(),
-                &manager,
-                &export_options,
-                &model_status,
-                &id,
+            // Say which part is being fetched before it is fetched: a batch that
+            // is waiting on a slow or blocked upstream otherwise sits on the
+            // same line for minutes and reads as a hang.
+            if let Some(progress) = &progress {
+                progress(
+                    done.load(Ordering::Relaxed),
+                    total,
+                    &format!("Fetching {id}"),
+                );
+            }
+            let result = match tokio::time::timeout(
+                COMPONENT_TIMEOUT,
+                export_one_kicad_component(
+                    &api,
+                    lcsc_client.as_deref(),
+                    &manager,
+                    &export_options,
+                    &model_status,
+                    &id,
+                ),
             )
-            .await;
+            .await
+            {
+                Ok(result) => result,
+                // One stuck part must not hold the whole batch: it fails, and
+                // the run carries on with the rest.
+                Err(_) => Err(AppError::Other(format!(
+                    "{id}: gave up after {}s",
+                    COMPONENT_TIMEOUT.as_secs()
+                ))),
+            };
+            done.fetch_add(1, Ordering::Relaxed);
             (id, result)
         });
     }
@@ -230,13 +262,28 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
         }
     }
 
+    // A batch that stops early still has to name every component it gave up on:
+    // the first error alone would leave the failed-ids panel showing one id of
+    // many.
+    let stopped_with = |summary: &KicadBatchSummary, first_error: Option<AppError>| {
+        let reason = first_error
+            .map(|error| error.to_string())
+            .unwrap_or_else(|| "KiCad export failed".to_string());
+        if summary.failed_ids.is_empty() {
+            AppError::Other(reason)
+        } else {
+            AppError::Other(format!(
+                "{reason}. Failed IDs: {}",
+                summary.failed_ids.join(", ")
+            ))
+        }
+    };
+
     if summary.failed > 0 && !options.continue_on_error {
-        return Err(first_error.unwrap_or_else(|| AppError::Other("KiCad export failed".into())));
+        return Err(stopped_with(&summary, first_error));
     }
     if summary.success == 0 && summary.skipped == 0 {
-        return Err(first_error.unwrap_or_else(|| {
-            AppError::Other("no KiCad components exported successfully".to_string())
-        }));
+        return Err(stopped_with(&summary, first_error));
     }
 
     Ok(summary)
