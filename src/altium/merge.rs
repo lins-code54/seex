@@ -7,7 +7,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use cfb::CompoundFile;
 use encoding_rs::WINDOWS_1252;
 
-use super::pcblib::{PcbLibrary, write_pcblib};
+use super::pcblib::{ModelData, PcbLibrary, write_pcblib};
 use super::schlib::Component;
 use crate::error::{AppError, Result};
 
@@ -35,13 +35,13 @@ pub(crate) struct PcblibComponentRecord {
     pub(crate) unique_id_primitive_information: Vec<u8>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub(crate) struct PcblibModelRecord {
     pub(crate) entry: Vec<u8>,
-    pub(crate) stream: Vec<u8>,
+    pub(crate) stream: ModelData,
 }
 
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Default)]
 pub(crate) struct PcblibRecordLibrary {
     pub(crate) components: Vec<PcblibComponentRecord>,
     pub(crate) models: Vec<PcblibModelRecord>,
@@ -232,10 +232,11 @@ pub(crate) fn write_pcblib_records(
         &pcblib_models_data_bytes(&library.models),
     )?;
     for (index, model) in library.models.iter().enumerate() {
+        let stream = model.stream.read()?;
         write_stream(
             &mut compound,
             &format!("/Library/Models/{index}"),
-            &model.stream,
+            stream.as_ref(),
         )?;
     }
 
@@ -472,7 +473,10 @@ fn read_pcblib_model_entries(
         }
         let entry = data[offset..offset + len].to_vec();
         offset += len;
-        let stream = read_stream_bytes(compound, &format!("/Library/Models/{index}"))?;
+        // An appended library's models are as bulky as a fresh one's, and they are
+        // only needed again when the merged file is written (see `ModelData`).
+        let stream_bytes = read_stream_bytes(compound, &format!("/Library/Models/{index}"))?;
+        let stream = ModelData::spill(stream_bytes);
         records.push(PcblibModelRecord { entry, stream });
     }
     Ok(records)
@@ -1248,6 +1252,16 @@ mod tests {
         assert_eq!(round_trip.components[0].name, "ROUNDTRIP_FOOTPRINT");
         assert_eq!(round_trip.models.len(), 1);
         fs::remove_file(path).ok();
+
+        // Appending reads an existing library's models back and writes them out
+        // again, so a model stream has to survive that round trip byte for byte.
+        let again = build_pcblib_from_payload(&payload, "ROUNDTRIP_FOOTPRINT", Some(STEP_FIXTURE))
+            .expect("build footprint library again");
+        let again = pcblib_records_from_library(&again).expect("capture PcbLib records again");
+        let expected = again.models[0].stream.read().expect("read captured model");
+        let actual = round_trip.models[0].stream.read().expect("read round tripped model");
+        assert!(!expected.is_empty());
+        assert_eq!(actual, expected, "an appended model must keep its stream");
     }
 
     #[test]

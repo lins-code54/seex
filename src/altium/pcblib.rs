@@ -1,7 +1,9 @@
+use std::borrow::Cow;
 use std::collections::HashSet;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use encoding_rs::WINDOWS_1252;
 
@@ -51,7 +53,7 @@ impl CoordPoint {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug)]
 pub struct PcbLibrary {
     pub unique_id: String,
     pub components: Vec<PcbComponent>,
@@ -89,7 +91,64 @@ impl PcbComponent {
     }
 }
 
-#[derive(Debug, Clone)]
+/// A model's STEP data, kept out of memory until the library is written.
+///
+/// The models are the bulk of a merged library (213MB across 200 parts in one
+/// measurement), and the library is assembled in memory before it is written, so
+/// holding every model's bytes made a batch's peak follow the number of parts
+/// rather than the few being worked on at once. Each model is spilled to a
+/// scratch file as it arrives and read back, one at a time, as the library is
+/// written.
+#[derive(Debug)]
+pub enum ModelData {
+    /// Bytes already in hand, for a caller with no reason to spill them.
+    Bytes(Vec<u8>),
+    /// A scratch file this process wrote, removed as soon as it is read.
+    Scratch(PathBuf),
+}
+
+impl Drop for ModelData {
+    /// A run that fails before the library is written would otherwise leave a
+    /// batch's worth of models behind in the temp directory.
+    fn drop(&mut self) {
+        if let ModelData::Scratch(path) = self {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
+impl ModelData {
+    /// Puts `bytes` in a scratch file. A file that cannot be written is no reason
+    /// to lose the model, so the bytes simply stay in memory instead.
+    pub fn spill(bytes: Vec<u8>) -> Self {
+        static NEXT: AtomicUsize = AtomicUsize::new(0);
+        let path = std::env::temp_dir().join(format!(
+            "seex_step_{}_{}.step",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match fs::write(&path, &bytes) {
+            Ok(()) => ModelData::Scratch(path),
+            Err(_) => ModelData::Bytes(bytes),
+        }
+    }
+
+    /// The bytes to write into the library. A scratch file is read once and then
+    /// removed: leaving it behind would fill the temp directory with a batch's
+    /// worth of models.
+    pub fn read(&self) -> Result<Cow<'_, [u8]>> {
+        match self {
+            ModelData::Bytes(bytes) => Ok(Cow::Borrowed(bytes)),
+            ModelData::Scratch(path) => {
+                let bytes = fs::read(path)?;
+                let _ = fs::remove_file(path);
+                Ok(Cow::Owned(bytes))
+            }
+        }
+    }
+}
+
+#[derive(Debug)]
 pub struct PcbModel {
     pub id: String,
     pub name: String,
@@ -100,7 +159,7 @@ pub struct PcbModel {
     pub rotation_z: f64,
     pub dz_raw: i32,
     pub checksum: i32,
-    pub step_data: Vec<u8>,
+    pub step_data: ModelData,
 }
 
 #[derive(Debug, Clone)]
@@ -259,10 +318,11 @@ pub fn write_pcblib(library: &PcbLibrary, output_path: &Path) -> Result<()> {
         &models_data_bytes(library),
     )?;
     for (index, model) in library.models.iter().enumerate() {
+        let step_data = model.step_data.read()?;
         write_stream(
             &mut compound,
             &format!("/Library/Models/{index}"),
-            &zlib_store(&model.step_data),
+            &zlib_store(step_data.as_ref()),
         )?;
     }
 
@@ -1313,6 +1373,53 @@ mod tests {
         }
         assert_eq!(offset, bytes.len());
         last_payload
+    }
+
+    fn temp_file(label: &str) -> PathBuf {
+        let timestamp = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        std::env::temp_dir().join(format!("{label}_{timestamp}.PcbLib"))
+    }
+
+    #[test]
+    fn writes_a_spilled_model_stream_byte_for_byte() {
+        let payload = concat!(
+            "ISO-10303-21;\n",
+            "#1 = CARTESIAN_POINT ( 'NONE', ( 0., 0., 0. ) );\n",
+            "END-ISO-10303-21;\n"
+        )
+        .as_bytes()
+        .to_vec();
+        let model = PcbModel {
+            id: "{00000000-0000-0000-0000-000000000001}".to_string(),
+            name: "BODY".to_string(),
+            is_embedded: true,
+            model_source: "Undefined".to_string(),
+            rotation_x: 0.0,
+            rotation_y: 0.0,
+            rotation_z: 0.0,
+            dz_raw: 0,
+            checksum: 0,
+            step_data: ModelData::spill(payload.clone()),
+        };
+        let library = PcbLibrary {
+            unique_id: stable_alpha_id("TEST_MODEL", "library"),
+            components: vec![],
+            models: vec![model],
+        };
+        let path = temp_file("export_pcblib_model");
+        write_pcblib(&library, &path).unwrap();
+
+        let file = File::open(&path).unwrap();
+        let mut compound = cfb::CompoundFile::open(file).unwrap();
+        let mut stream = compound.open_stream("/Library/Models/0").unwrap();
+        let mut written = Vec::new();
+        std::io::Read::read_to_end(&mut stream, &mut written).unwrap();
+        fs::remove_file(path).ok();
+
+        assert_eq!(written, zlib_store(&payload));
     }
 
     #[test]

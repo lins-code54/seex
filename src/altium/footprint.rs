@@ -3,10 +3,10 @@ use serde_json::Value;
 use super::pcblib::{
     CoordPoint, LAYER_BOTTOM, LAYER_BOTTOM_OVERLAY, LAYER_BOTTOM_SOLDER, LAYER_MECHANICAL_1,
     LAYER_MECHANICAL_2, LAYER_MECHANICAL_5, LAYER_MECHANICAL_6, LAYER_MECHANICAL_9, LAYER_MULTI,
-    LAYER_TOP, LAYER_TOP_OVERLAY, LAYER_TOP_SOLDER, PAD_HOLE_ROUND, PAD_HOLE_SLOT, PAD_HOLE_SQUARE,
-    PAD_SHAPE_OCTAGONAL, PAD_SHAPE_RECTANGULAR, PAD_SHAPE_ROUND, PAD_SHAPE_ROUNDED_RECTANGLE,
-    PcbArc, PcbComponent, PcbComponentBody, PcbExtendedPrimitiveInfo, PcbLibrary, PcbModel, PcbPad,
-    PcbRegion, PcbTrack, stable_guid,
+    LAYER_TOP, LAYER_TOP_OVERLAY, LAYER_TOP_SOLDER, ModelData, PAD_HOLE_ROUND, PAD_HOLE_SLOT,
+    PAD_HOLE_SQUARE, PAD_SHAPE_OCTAGONAL, PAD_SHAPE_RECTANGULAR, PAD_SHAPE_ROUND,
+    PAD_SHAPE_ROUNDED_RECTANGLE, PcbArc, PcbComponent, PcbComponentBody, PcbExtendedPrimitiveInfo,
+    PcbLibrary, PcbModel, PcbPad, PcbRegion, PcbTrack, stable_guid,
 };
 use crate::error::{AppError, Result};
 use crate::util::{altium_model_rotation_z, nested_string, sanitize_filename, value_to_string};
@@ -687,7 +687,7 @@ pub fn build_pcblib_from_payload(
             rotation_z: altium_model_rotation_z(model.rotation_z),
             dz_raw: 0,
             checksum: 0,
-            step_data,
+            step_data: ModelData::spill(step_data),
         });
     }
     library.components.push(component);
@@ -1957,7 +1957,8 @@ mod tests {
             "model_3d": {"title":"BODY-H1.2", "uri":"modeluuid", "transform":"192.913,236.22,0,0,0,0,0,0,0"}}});
 
         let library = build_pcblib_from_payload(&payload, "ESOP-8", Some(step.as_bytes())).unwrap();
-        let embedded = String::from_utf8(library.models[0].step_data.clone()).unwrap();
+        let embedded = library.models[0].step_data.read().unwrap().into_owned();
+        let embedded = String::from_utf8(embedded).unwrap();
 
         assert!(!embedded.contains("-0.83"));
         assert!(embedded.contains("0.000000000"));
