@@ -102,8 +102,8 @@ impl SeexUi {
                     .text_size(px(BODY))
                     .text_color(theme::muted())
                     .child(locale::t(
-                        "Altium and KiCad export through export",
-                        "通过 export 导出 Altium 和 KiCad 库",
+                        "Altium and KiCad export",
+                        "导出 Altium 和 KiCad 库",
                     )),
             );
 
