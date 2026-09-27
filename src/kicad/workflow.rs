@@ -34,6 +34,10 @@ pub struct KicadBatchOptions {
     pub english_metadata: bool,
     pub parallel: usize,
     pub continue_on_error: bool,
+    /// Add to the library that is already in the output directory. Without it
+    /// the export owns the library and refuses to write into one that is
+    /// there, which is what Altium's append flag means as well.
+    pub append: bool,
     pub progress: Option<ExportProgressCallback>,
 }
 
@@ -104,6 +108,9 @@ pub async fn export_kicad_single(options: KicadSingleOptions) -> Result<KicadBat
         english_metadata: options.english_metadata,
         parallel: 1,
         continue_on_error: false,
+        // One component named one library: it is written into whatever is
+        // there, which is how the CLI's --symbol-lib/--footprint-lib work.
+        append: true,
         progress: None,
     };
     export_kicad_batch(batch_options).await
@@ -115,6 +122,7 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
     let api = Arc::new(EasyedaApi::new());
     let lcsc_client = options.english_metadata.then(LcscClient::new).map(Arc::new);
     let manager = Arc::new(LibraryManager::from_options(&options.library)?);
+    reject_existing_library(&options, &manager)?;
     manager.create_directories()?;
 
     let model_status = Arc::new(ModelStageStatus::new());
@@ -355,6 +363,62 @@ fn validate_batch_options(options: &KicadBatchOptions) -> Result<()> {
     validate_library_options(&options.library)
 }
 
+/// Refuses to write into a library that is already there unless the caller
+/// asked to append — the same rule, and the same reason, as the Altium export
+/// refusing an existing merged library.
+///
+/// The writers themselves add what is missing to an existing library and leave
+/// the rest alone, which *is* the append behaviour, so without this check the
+/// flag would mean nothing on this path: exporting into a directory that
+/// already holds a library would quietly merge the two.
+fn reject_existing_library(options: &KicadBatchOptions, manager: &LibraryManager) -> Result<()> {
+    if options.append {
+        return Ok(());
+    }
+
+    let full = options.export.full;
+    let mut existing = Vec::new();
+    if options.export.symbol || full {
+        let path = manager.get_symbol_lib_path();
+        if path.exists() {
+            existing.push(path.display().to_string());
+        }
+    }
+    if options.export.footprint || full {
+        let dir = manager.footprint_lib_dir();
+        if holds_extension(dir, "kicad_mod") {
+            existing.push(dir.display().to_string());
+        }
+    }
+    if options.export.model_3d || full {
+        let dir = manager.model_lib_dir();
+        if holds_extension(dir, "step") {
+            existing.push(dir.display().to_string());
+        }
+    }
+
+    if existing.is_empty() {
+        return Ok(());
+    }
+    Err(AppError::Other(format!(
+        "KiCad library already exists: {}. Turn on Append to add components to it, or choose another library name.",
+        existing.join(", ")
+    )))
+}
+
+/// Whether a directory holds at least one file with this extension, which is
+/// what makes it an existing library rather than an empty directory the export
+/// may as well fill.
+fn holds_extension(dir: &Path, extension: &str) -> bool {
+    fs::read_dir(dir)
+        .map(|entries| {
+            entries.flatten().any(|entry| {
+                entry.path().extension().and_then(|value| value.to_str()) == Some(extension)
+            })
+        })
+        .unwrap_or(false)
+}
+
 fn validate_targets(options: &KicadExportOptions) -> Result<()> {
     if !options.symbol && !options.footprint && !options.model_3d && !options.full {
         return Err(AppError::Other(
@@ -475,6 +539,67 @@ mod tests {
         validate_lcsc_id("C2040").unwrap();
         validate_lcsc_id("c2040").unwrap();
         assert!(validate_lcsc_id("C20A40").is_err());
+    }
+
+    #[test]
+    fn an_existing_library_is_only_written_into_when_appending() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("seex_kicad_append_{stamp}"));
+        let library = KicadLibraryOptions {
+            output: output.clone(),
+            library_name: Some("lib".to_string()),
+            symbol_lib: None,
+            footprint_lib: None,
+            model_lib: None,
+        };
+        let manager = LibraryManager::from_options(&library).unwrap();
+        let options = |append: bool| KicadBatchOptions {
+            ids: vec!["C2040".to_string()],
+            library: KicadLibraryOptions {
+                output: output.clone(),
+                library_name: Some("lib".to_string()),
+                symbol_lib: None,
+                footprint_lib: None,
+                model_lib: None,
+            },
+            export: KicadExportOptions {
+                symbol: true,
+                footprint: true,
+                model_3d: false,
+                full: false,
+                force: false,
+                kicad_version: KicadVersion::V6,
+            },
+            english_metadata: false,
+            parallel: 1,
+            continue_on_error: false,
+            append,
+            progress: None,
+        };
+
+        // Nothing there yet: both modes may write.
+        reject_existing_library(&options(false), &manager).unwrap();
+
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(manager.get_symbol_lib_path(), "(kicad_symbol_lib)").unwrap();
+        std::fs::create_dir_all(manager.footprint_lib_dir()).unwrap();
+        std::fs::write(
+            manager.footprint_lib_dir().join("Part_C1.kicad_mod"),
+            "(footprint \"Part_C1\")",
+        )
+        .unwrap();
+
+        let refused = reject_existing_library(&options(false), &manager)
+            .unwrap_err()
+            .to_string();
+        assert!(refused.contains("already exists"), "{refused}");
+        assert!(refused.contains("Append"), "{refused}");
+        reject_existing_library(&options(true), &manager).unwrap();
+
+        let _ = std::fs::remove_dir_all(&output);
     }
 
     #[test]

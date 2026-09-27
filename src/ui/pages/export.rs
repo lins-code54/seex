@@ -362,9 +362,12 @@ impl SeexUi {
             .w_full()
             .gap(px(12.0));
 
-        if target != "kicad" && mode != "3d" {
-            toggles = toggles
-                .child(components::hint(
+        // Merge belongs to Altium alone: a KiCad export always writes one named
+        // symbol library and one footprint directory, so there is nothing to
+        // merge. Append applies to both, with the same meaning in each.
+        if mode != "3d" {
+            if target != "kicad" {
+                toggles = toggles.child(components::hint(
                     components::selectable(
                         "toggle-merge",
                         locale::t("Merge", "合并"),
@@ -384,28 +387,29 @@ impl SeexUi {
                     ),
                     HintArea::ExportToggles,
                     cx,
-                ))
-                .child(components::hint(
-                    components::selectable(
-                        "toggle-append",
-                        locale::t("Append", "追加"),
-                        append,
-                        cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                            if let Ok(mut state) = this.state.lock() {
-                                let next = !state.export_append;
-                                state.set_export_append(next);
-                            }
-                            this.mark_config_dirty();
-                            cx.notify();
-                        }),
-                    ),
-                    locale::t(
-                        "Append: add to an existing library instead of overwriting",
-                        "追加：向已有库文件追加，而不是覆盖",
-                    ),
-                    HintArea::ExportToggles,
-                    cx,
                 ));
+            }
+            toggles = toggles.child(components::hint(
+                components::selectable(
+                    "toggle-append",
+                    locale::t("Append", "追加"),
+                    append,
+                    cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        if let Ok(mut state) = this.state.lock() {
+                            let next = !state.export_append;
+                            state.set_export_append(next);
+                        }
+                        this.mark_config_dirty();
+                        cx.notify();
+                    }),
+                ),
+                locale::t(
+                    "Append: add to an existing library instead of overwriting",
+                    "追加：向已有库文件追加，而不是覆盖",
+                ),
+                HintArea::ExportToggles,
+                cx,
+            ));
         }
 
         toggles = toggles

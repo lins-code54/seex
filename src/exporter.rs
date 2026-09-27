@@ -294,6 +294,7 @@ fn build_kicad_batch_options(
         english_metadata: req.lcsc_english,
         parallel: req.parallel.max(1),
         continue_on_error: req.continue_on_error,
+        append: req.append,
         progress,
     }
 }
