@@ -127,21 +127,18 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
 
     let model_status = Arc::new(ModelStageStatus::new());
     let export_options = Arc::new(options.export.clone());
-    let checkpoint_path = kicad_checkpoint_path(&options.library.output, &options.export);
-    let completed = if options.export.force {
-        HashSet::new()
-    } else {
+    let checkpoint_path =
+        kicad_checkpoint_path(manager.lib_name(), &options.library.output, &options.export);
+    // The checkpoint is the record of what has already been exported into this
+    // library, so it decides what to skip on its own. `force` says to replace
+    // entries that are there, which is a different job: reading it as "do the
+    // work again" is what made a repeat export re-download everything.
+    let completed = if library_present(&options, &manager) {
         load_checkpoint(&checkpoint_path)?
+    } else {
+        HashSet::new()
     };
-    let mut ids = Vec::new();
-    let mut skipped = 0usize;
-    for id in options.ids.clone() {
-        if completed.contains(&normalize_checkpoint_id(&id)) {
-            skipped += 1;
-        } else {
-            ids.push(id);
-        }
-    }
+    let (ids, skipped) = pending_ids(options.ids.clone(), &completed);
     let mut summary = KicadBatchSummary {
         total: ids.len() + skipped,
         skipped,
@@ -245,7 +242,14 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
     Ok(summary)
 }
 
-fn kicad_checkpoint_path(output: &Path, options: &KicadExportOptions) -> PathBuf {
+/// The checkpoint file for one library and one set of targets. The library is
+/// part of the name because two libraries written into one directory are two
+/// different sets of exported ids.
+fn kicad_checkpoint_path(
+    library_name: &str,
+    output: &Path,
+    options: &KicadExportOptions,
+) -> PathBuf {
     let mut key = Vec::new();
     if options.full || options.symbol {
         key.push("symbol");
@@ -256,7 +260,42 @@ fn kicad_checkpoint_path(output: &Path, options: &KicadExportOptions) -> PathBuf
     if options.full || options.model_3d {
         key.push("3d");
     }
-    output.join(format!(".kicad_checkpoint_{}", key.join("_")))
+    output.join(format!(
+        ".kicad_checkpoint_{library_name}_{}",
+        key.join("_")
+    ))
+}
+
+/// Whether the outputs the checkpoint would be talking about are still on disk.
+///
+/// A checkpoint means "these ids are in this library", so it only counts while
+/// the library is there: deleting it is how a user asks for everything to be
+/// exported again. An absent 3D model directory does not count, because a part
+/// without a model is ordinary and must not stop the rest from being skipped.
+fn library_present(options: &KicadBatchOptions, manager: &LibraryManager) -> bool {
+    let full = options.export.full;
+    if options.export.model_3d && !full {
+        // A 3D-only export is judged by its models: it writes nothing else.
+        return holds_extension(manager.model_lib_dir(), "step");
+    }
+    let symbols = (options.export.symbol || full) && manager.get_symbol_lib_path().exists();
+    let footprints = (options.export.footprint || full)
+        && holds_extension(manager.footprint_lib_dir(), "kicad_mod");
+    symbols || footprints
+}
+
+/// The ids still to export, and how many the checkpoint already covers.
+fn pending_ids(ids: Vec<String>, completed: &HashSet<String>) -> (Vec<String>, usize) {
+    let mut pending = Vec::new();
+    let mut skipped = 0usize;
+    for id in ids {
+        if completed.contains(&normalize_checkpoint_id(&id)) {
+            skipped += 1;
+        } else {
+            pending.push(id);
+        }
+    }
+    (pending, skipped)
 }
 
 fn load_checkpoint(path: &Path) -> Result<HashSet<String>> {
@@ -539,6 +578,103 @@ mod tests {
         validate_lcsc_id("C2040").unwrap();
         validate_lcsc_id("c2040").unwrap();
         assert!(validate_lcsc_id("C20A40").is_err());
+    }
+
+    #[test]
+    fn the_checkpoint_covers_an_id_whether_or_not_force_is_on() {
+        // `pending_ids` has no force argument on purpose: the checkpoint is the
+        // record of what has been exported, and force only says to replace what
+        // is there. Passing force in was what made a repeat export redo all of
+        // it.
+        let completed: HashSet<String> = ["C2040".to_string()].into_iter().collect();
+
+        let (pending, skipped) =
+            pending_ids(vec!["c2040".to_string(), "C42".to_string()], &completed);
+
+        assert_eq!(
+            skipped, 1,
+            "the exported id is skipped, whatever force says"
+        );
+        assert_eq!(pending, vec!["C42".to_string()]);
+    }
+
+    #[test]
+    fn the_checkpoint_is_named_for_its_library() {
+        let export = KicadExportOptions {
+            symbol: false,
+            footprint: false,
+            model_3d: false,
+            full: true,
+            force: false,
+            kicad_version: KicadVersion::V6,
+        };
+
+        let path = kicad_checkpoint_path("lib", Path::new("out"), &export)
+            .to_string_lossy()
+            .to_string();
+
+        assert!(path.contains("lib"), "{path}");
+        assert!(path.contains("symbol_footprint_3d"), "{path}");
+    }
+
+    #[test]
+    fn a_checkpoint_only_counts_while_its_library_is_there() {
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let output = std::env::temp_dir().join(format!("seex_kicad_present_{stamp}"));
+        let manager = LibraryManager::from_options(&KicadLibraryOptions {
+            output: output.clone(),
+            library_name: Some("lib".to_string()),
+            symbol_lib: None,
+            footprint_lib: None,
+            model_lib: None,
+        })
+        .unwrap();
+        let options = KicadBatchOptions {
+            ids: vec!["C2040".to_string()],
+            library: KicadLibraryOptions {
+                output: output.clone(),
+                library_name: Some("lib".to_string()),
+                symbol_lib: None,
+                footprint_lib: None,
+                model_lib: None,
+            },
+            export: KicadExportOptions {
+                symbol: true,
+                footprint: true,
+                model_3d: false,
+                full: false,
+                force: false,
+                kicad_version: KicadVersion::V6,
+            },
+            english_metadata: false,
+            parallel: 1,
+            continue_on_error: false,
+            append: true,
+            progress: None,
+        };
+
+        assert!(
+            !library_present(&options, &manager),
+            "nothing is written yet"
+        );
+
+        std::fs::create_dir_all(&output).unwrap();
+        std::fs::write(manager.get_symbol_lib_path(), "(kicad_symbol_lib)").unwrap();
+        assert!(
+            library_present(&options, &manager),
+            "the library is there now"
+        );
+
+        std::fs::remove_file(manager.get_symbol_lib_path()).unwrap();
+        assert!(
+            !library_present(&options, &manager),
+            "deleting the library is how the user asks for it all again"
+        );
+
+        let _ = std::fs::remove_dir_all(&output);
     }
 
     #[test]
