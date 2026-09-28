@@ -232,12 +232,9 @@ pub(crate) fn write_pcblib_records(
         &pcblib_models_data_bytes(&library.models),
     )?;
     for (index, model) in library.models.iter().enumerate() {
-        let stream = model.stream.read()?;
-        write_stream(
-            &mut compound,
-            &format!("/Library/Models/{index}"),
-            stream.as_ref(),
-        )?;
+        let path = format!("/Library/Models/{index}");
+        let mut stream = compound.create_stream(&path)?;
+        model.stream.copy_to(&mut stream)?;
     }
 
     compound.create_storage("/Library/Textures/")?;
@@ -473,10 +470,11 @@ fn read_pcblib_model_entries(
         }
         let entry = data[offset..offset + len].to_vec();
         offset += len;
-        // An appended library's models are as bulky as a fresh one's, and they are
-        // only needed again when the merged file is written (see `ModelData`).
-        let stream_bytes = read_stream_bytes(compound, &format!("/Library/Models/{index}"))?;
-        let stream = ModelData::spill(stream_bytes);
+        // Copied straight out of the library: an appended library's models are as
+        // bulky as a fresh one's, and they are only needed again when the merged file
+        // is written (see `ModelData`).
+        let mut stream = compound.open_stream(&format!("/Library/Models/{index}"))?;
+        let stream = ModelData::from_reader(&mut stream)?;
         records.push(PcblibModelRecord { entry, stream });
     }
     Ok(records)

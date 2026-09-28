@@ -1,6 +1,6 @@
 use std::collections::HashSet;
-use std::fs::{self, OpenOptions};
-use std::io::{self, Write};
+use std::fs::{self, File, OpenOptions};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
@@ -14,11 +14,12 @@ use crate::altium::merge::{
     read_pcblib_records, read_schlib_records, schlib_record_from_component, write_pcblib_records,
     write_schlib_records,
 };
-use crate::altium::pcblib::{PcbLibrary, write_pcblib};
+use crate::altium::footprint::build_pcblib_from_payload_with_model;
+use crate::altium::pcblib::{PcbLibrary, scratch_payload_path, write_pcblib};
 use crate::altium::schlib::NO_FILL_BGR;
 use crate::altium::workflow::{
-    build_pcblib_library_from_detail, build_schlib_component_from_detail_with_color, export_pcblib,
-    export_schlib_with_options, resolved_footprint_name,
+    build_schlib_component_from_detail_with_color, export_pcblib, export_schlib_with_options,
+    load_placed_step_for_pcblib, resolved_footprint_name, step_model_candidates,
 };
 use crate::error::{AppError, Result};
 use crate::lceda::{LcedaClient, SearchItem};
@@ -224,6 +225,52 @@ struct IndexedId {
     id: String,
 }
 
+/// A fetched component payload, parked on disk until the component is built.
+///
+/// A merge fetches every component's symbol and footprint before it builds any of
+/// them, so holding the parsed payloads put the whole batch's JSON in memory (a few
+/// hundred parts is tens of megabytes). Writing each payload out as it arrives and
+/// reading it back in the build keeps only the parts being worked on in memory. A
+/// payload that cannot be written just stays in memory rather than failing the run.
+#[derive(Debug)]
+enum Payload {
+    File(PathBuf),
+    Inline(Box<Value>),
+}
+
+impl Payload {
+    fn store(value: Value) -> Self {
+        let path = scratch_payload_path();
+        if let Ok(mut writer) = File::create(&path).map(BufWriter::new) {
+            if serde_json::to_writer(&mut writer, &value).is_ok() && writer.flush().is_ok() {
+                return Payload::File(path);
+            }
+            let _ = fs::remove_file(&path);
+        }
+        Payload::Inline(Box::new(value))
+    }
+
+    fn load(&self) -> Result<Value> {
+        match self {
+            Payload::Inline(value) => Ok((**value).clone()),
+            Payload::File(path) => {
+                let file = File::open(path)?;
+                serde_json::from_reader(file).map_err(|err| {
+                    AppError::InvalidResponse(format!("could not read a fetched payload: {err}"))
+                })
+            }
+        }
+    }
+}
+
+impl Drop for Payload {
+    fn drop(&mut self) {
+        if let Payload::File(path) = self {
+            let _ = fs::remove_file(path);
+        }
+    }
+}
+
 #[derive(Debug)]
 struct PreparedMergeComponent {
     index: usize,
@@ -232,8 +279,9 @@ struct PreparedMergeComponent {
     identity: String,
     component_name_base: String,
     footprint_name_base: String,
-    symbol_data: Option<Value>,
-    footprint_data: Option<Value>,
+    step_candidates: Vec<String>,
+    symbol_data: Option<Payload>,
+    footprint_data: Option<Payload>,
     english_metadata: Option<LcscProduct>,
 }
 
@@ -245,8 +293,9 @@ struct NamedMergeComponent {
     identity: String,
     component_name: String,
     footprint_name: String,
-    symbol_data: Option<Value>,
-    footprint_data: Option<Value>,
+    step_candidates: Vec<String>,
+    symbol_data: Option<Payload>,
+    footprint_data: Option<Payload>,
     english_metadata: Option<LcscProduct>,
 }
 
@@ -704,6 +753,9 @@ async fn export_merged_components_parallel(
 
     let parallel = options.parallel.max(1).min(indexed_ids.len());
     let mut first_error = None;
+    // Fetching stays continuous: every component is prepared at the batch's own
+    // parallelism while the builds that consume them run behind it, rather than the
+    // batch being cut into waves that each have to finish before the next starts.
     let mut prepared = prepare_merged_components_parallel(
         client,
         targets,
@@ -747,6 +799,7 @@ async fn export_merged_components_parallel(
                 identity: prepared.identity,
                 component_name,
                 footprint_name,
+                step_candidates: prepared.step_candidates,
                 symbol_data: prepared.symbol_data,
                 footprint_data: prepared.footprint_data,
                 english_metadata: prepared.english_metadata,
@@ -863,12 +916,19 @@ async fn prepare_merged_component(
         .as_ref()
         .map(|data| resolved_footprint_name(&item, data))
         .unwrap_or_else(|| component_name_base.clone());
+    // The model ids are pulled out here, while the payload is in memory anyway, so the
+    // build can start the download before reading the payload back.
+    let step_candidates = footprint_data
+        .as_ref()
+        .map(|data| step_model_candidates(&item, data))
+        .unwrap_or_default();
+    let footprint_data = footprint_data.map(Payload::store);
 
     let symbol_data = if targets.schlib {
         let symbol_uuid = item
             .symbol_uuid()
             .ok_or(AppError::MissingSymbolOrFootprint)?;
-        Some(client.component_detail(&symbol_uuid).await?)
+        Some(Payload::store(client.component_detail(&symbol_uuid).await?))
     } else {
         None
     };
@@ -886,6 +946,7 @@ async fn prepare_merged_component(
         identity,
         component_name_base,
         footprint_name_base,
+        step_candidates,
         symbol_data,
         footprint_data,
         english_metadata,
@@ -973,10 +1034,11 @@ async fn build_named_merged_component(
         let symbol_data = named
             .symbol_data
             .as_ref()
-            .ok_or(AppError::MissingSymbolOrFootprint)?;
+            .ok_or(AppError::MissingSymbolOrFootprint)?
+            .load()?;
         let component = build_schlib_component_from_detail_with_color(
             &named.item,
-            symbol_data,
+            &symbol_data,
             &named.component_name,
             Some(&named.footprint_name),
             Some(merged_pcblib_file),
@@ -990,19 +1052,21 @@ async fn build_named_merged_component(
     };
 
     let pcblib_library = if targets.pcblib {
+        // The model download comes before the payload is read back: the payload is
+        // only needed to build the footprint, and a download takes seconds while the
+        // batch has one in flight per parallel part.
+        let step_data =
+            load_placed_step_for_pcblib(client, &named.item, &named.step_candidates).await;
         let footprint_data = named
             .footprint_data
             .as_ref()
-            .ok_or(AppError::MissingSymbolOrFootprint)?;
-        Some(
-            build_pcblib_library_from_detail(
-                client,
-                &named.item,
-                footprint_data,
-                &named.footprint_name,
-            )
-            .await?,
-        )
+            .ok_or(AppError::MissingSymbolOrFootprint)?
+            .load()?;
+        Some(build_pcblib_from_payload_with_model(
+            &footprint_data,
+            &named.footprint_name,
+            step_data,
+        )?)
     } else {
         None
     };

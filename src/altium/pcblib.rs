@@ -1,7 +1,7 @@
 use std::borrow::Cow;
 use std::collections::HashSet;
 use std::fs::{self, File};
-use std::io::Write;
+use std::io::{BufReader, BufWriter, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
@@ -107,6 +107,26 @@ pub enum ModelData {
     Scratch(PathBuf),
 }
 
+/// A path in the temp directory for one model's bytes. Downloads write straight
+/// into a file like this so a model is not held in memory while it arrives.
+pub(crate) fn scratch_step_path() -> PathBuf {
+    scratch_path("step", "step")
+}
+
+/// A path in the temp directory for one fetched component payload.
+pub(crate) fn scratch_payload_path() -> PathBuf {
+    scratch_path("payload", "json")
+}
+
+fn scratch_path(kind: &str, extension: &str) -> PathBuf {
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    std::env::temp_dir().join(format!(
+        "seex_{kind}_{}_{}.{extension}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ))
+}
+
 impl Drop for ModelData {
     /// A run that fails before the library is written would otherwise leave a
     /// batch's worth of models behind in the temp directory.
@@ -121,15 +141,41 @@ impl ModelData {
     /// Puts `bytes` in a scratch file. A file that cannot be written is no reason
     /// to lose the model, so the bytes simply stay in memory instead.
     pub fn spill(bytes: Vec<u8>) -> Self {
-        static NEXT: AtomicUsize = AtomicUsize::new(0);
-        let path = std::env::temp_dir().join(format!(
-            "seex_step_{}_{}.step",
-            std::process::id(),
-            NEXT.fetch_add(1, Ordering::Relaxed)
-        ));
+        let path = scratch_step_path();
         match fs::write(&path, &bytes) {
             Ok(()) => ModelData::Scratch(path),
             Err(_) => ModelData::Bytes(bytes),
+        }
+    }
+
+    /// Puts a borrowed model in a scratch file, which is the common case: the
+    /// caller has no reason to hand over a model-sized buffer it would only write
+    /// to disk. Only a scratch file that cannot be written costs a copy.
+    pub fn spill_copy(bytes: &[u8]) -> Self {
+        let path = scratch_step_path();
+        match fs::write(&path, bytes) {
+            Ok(()) => ModelData::Scratch(path),
+            Err(_) => ModelData::Bytes(bytes.to_vec()),
+        }
+    }
+
+    /// Copies a model out of a reader into a scratch file, so reading a model back
+    /// out of a library does not hold it in memory first.
+    pub fn from_reader(reader: &mut impl Read) -> Result<Self> {
+        let path = scratch_step_path();
+        let Ok(file) = File::create(&path) else {
+            // A scratch file that cannot be created only costs the copy.
+            let mut bytes = Vec::new();
+            reader.read_to_end(&mut bytes)?;
+            return Ok(ModelData::Bytes(bytes));
+        };
+
+        match std::io::copy(reader, &mut BufWriter::new(file)) {
+            Ok(_) => Ok(ModelData::Scratch(path)),
+            Err(error) => {
+                let _ = fs::remove_file(&path);
+                Err(error.into())
+            }
         }
     }
 
@@ -145,6 +191,106 @@ impl ModelData {
                 Ok(Cow::Owned(bytes))
             }
         }
+    }
+
+    /// Copies the model into `writer` a chunk at a time.
+    ///
+    /// A merge has one model per parallel part in flight, and it writes each part's
+    /// library out before merging, so reading a whole model into memory to write it
+    /// is another model-sized buffer per part.
+    pub fn copy_to(&self, writer: &mut impl Write) -> std::io::Result<()> {
+        self.stream_into(|chunk| writer.write_all(chunk))
+    }
+
+    /// Writes the model as the zlib "stored" stream the library expects, a chunk at
+    /// a time, without building the wrapped model in memory first.
+    pub fn write_zlib_stored(&self, writer: &mut impl Write) -> std::io::Result<()> {
+        writer.write_all(&[0x78, 0x01])?;
+        let mut block = Vec::with_capacity(STORED_BLOCK_LEN);
+        let mut checksum = Adler32::default();
+        let mut blocks_written = 0usize;
+        self.stream_into(|chunk| {
+            checksum.update(chunk);
+            let mut offset = 0usize;
+            while offset < chunk.len() {
+                if block.len() == STORED_BLOCK_LEN && offset < chunk.len() {
+                    write_stored_block(writer, &block, false)?;
+                    block.clear();
+                    blocks_written += 1;
+                }
+                let take = (STORED_BLOCK_LEN - block.len()).min(chunk.len() - offset);
+                block.extend_from_slice(&chunk[offset..offset + take]);
+                offset += take;
+            }
+            Ok(())
+        })?;
+
+        // The last block is marked final, which cannot be known until the model ends.
+        if block.is_empty() && blocks_written == 0 {
+            write_stored_block(writer, &[], true)?;
+        } else {
+            write_stored_block(writer, &block, true)?;
+        }
+        writer.write_all(&checksum.finish().to_be_bytes())
+    }
+
+    /// Feeds the model to `sink` in chunks, and removes a scratch file once it has
+    /// been handed over.
+    fn stream_into(&self, mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+        match self {
+            ModelData::Bytes(bytes) => sink(bytes),
+            ModelData::Scratch(path) => {
+                let mut file = BufReader::new(File::open(path)?);
+                let mut buffer = vec![0u8; COPY_CHUNK_LEN];
+                loop {
+                    let read = file.read(&mut buffer)?;
+                    if read == 0 {
+                        break;
+                    }
+                    sink(&buffer[..read])?;
+                }
+                drop(file);
+                let _ = fs::remove_file(path);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The largest payload a deflate stored block can carry.
+const STORED_BLOCK_LEN: usize = 65_535;
+const COPY_CHUNK_LEN: usize = 64 * 1024;
+
+fn write_stored_block(writer: &mut impl Write, data: &[u8], final_block: bool) -> std::io::Result<()> {
+    writer.write_all(&[if final_block { 0x01 } else { 0x00 }])?;
+    let len = data.len() as u16;
+    writer.write_all(&len.to_le_bytes())?;
+    writer.write_all(&(!len).to_le_bytes())?;
+    writer.write_all(data)
+}
+
+#[derive(Default)]
+struct Adler32 {
+    a: u32,
+    b: u32,
+}
+
+impl Adler32 {
+    fn update(&mut self, data: &[u8]) {
+        const MOD_ADLER: u32 = 65_521;
+        let mut a = if self.a == 0 { 1 } else { self.a };
+        let mut b = self.b;
+        for &byte in data {
+            a = (a + u32::from(byte)) % MOD_ADLER;
+            b = (b + a) % MOD_ADLER;
+        }
+        self.a = a;
+        self.b = b;
+    }
+
+    fn finish(self) -> u32 {
+        let a = if self.a == 0 { 1 } else { self.a };
+        (self.b << 16) | a
     }
 }
 
@@ -318,12 +464,11 @@ pub fn write_pcblib(library: &PcbLibrary, output_path: &Path) -> Result<()> {
         &models_data_bytes(library),
     )?;
     for (index, model) in library.models.iter().enumerate() {
-        let step_data = model.step_data.read()?;
-        write_stream(
-            &mut compound,
-            &format!("/Library/Models/{index}"),
-            &zlib_store(step_data.as_ref()),
-        )?;
+        // Written straight from its scratch file: a merge holds one model per
+        // parallel part, so wrapping each one in memory is a model-sized buffer each.
+        let path = format!("/Library/Models/{index}");
+        let mut stream = compound.create_stream(&path)?;
+        model.step_data.write_zlib_stored(&mut stream)?;
     }
 
     compound.create_storage("/Library/Textures/")?;
@@ -1385,13 +1530,13 @@ mod tests {
 
     #[test]
     fn writes_a_spilled_model_stream_byte_for_byte() {
-        let payload = concat!(
-            "ISO-10303-21;\n",
-            "#1 = CARTESIAN_POINT ( 'NONE', ( 0., 0., 0. ) );\n",
-            "END-ISO-10303-21;\n"
-        )
-        .as_bytes()
-        .to_vec();
+        // Long enough to need more than one deflate stored block, so the block
+        // boundaries are checked as well.
+        let mut payload = b"ISO-10303-21;\n".to_vec();
+        while payload.len() < STORED_BLOCK_LEN * 2 + 17 {
+            payload.extend_from_slice(b"#1 = CARTESIAN_POINT ( 'NONE', ( 0., 0., 0. ) );\n");
+        }
+        payload.extend_from_slice(b"END-ISO-10303-21;\n");
         let model = PcbModel {
             id: "{00000000-0000-0000-0000-000000000001}".to_string(),
             name: "BODY".to_string(),

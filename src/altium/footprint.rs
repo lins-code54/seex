@@ -26,9 +26,24 @@ pub fn build_pcblib_from_payload(
     component_name: &str,
     step_bytes: Option<&[u8]>,
 ) -> Result<PcbLibrary> {
+    let step_data = step_bytes.map(|bytes| {
+        // LCEDA does not always author a model with its underside on the board plane, so
+        // the embedded geometry is moved there (see `crate::step_model`).
+        ModelData::spill_copy(crate::step_model::place_step_on_board(bytes).as_ref())
+    });
+    build_pcblib_from_payload_with_model(payload, component_name, step_data)
+}
+
+/// The same library, for a caller that already placed the model and spilled it.
+pub fn build_pcblib_from_payload_with_model(
+    payload: &Value,
+    component_name: &str,
+    step_data: Option<ModelData>,
+) -> Result<PcbLibrary> {
+    let has_step = step_data.is_some();
     let rows = parse_easyeda_rows(payload)?;
     let model_3d = parse_footprint_3d_model(payload).or_else(|| {
-        step_bytes.map(|_| Model3dRaw {
+        has_step.then(|| Model3dRaw {
             title: component_name.to_string(),
             uri: format!("embedded-step:{component_name}"),
             height_mm: None,
@@ -633,11 +648,8 @@ pub fn build_pcblib_from_payload(
     let mut library = PcbLibrary::default();
     let body_extents = body_bounds.finish().or_else(|| bounds.finish());
     if let (Some(model), Some(step_data), Some(extents)) =
-        (model_3d.as_ref(), step_bytes, body_extents)
+        (model_3d.as_ref(), step_data, body_extents)
     {
-        // LCEDA does not always author a model with its underside on the board plane, so the
-        // embedded geometry is moved there (see `crate::step_model`).
-        let step_data = crate::step_model::place_step_on_board(step_data);
         let model_id = stable_guid(&format!("{}|{}", component_name, model.uri));
         let model_name = choose_step_model_name(component_name, &model.title);
         component.bodies.push(PcbComponentBody {
@@ -687,7 +699,7 @@ pub fn build_pcblib_from_payload(
             rotation_z: altium_model_rotation_z(model.rotation_z),
             dz_raw: 0,
             checksum: 0,
-            step_data: ModelData::spill(step_data),
+            step_data,
         });
     }
     library.components.push(component);
