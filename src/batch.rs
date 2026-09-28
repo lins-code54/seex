@@ -210,7 +210,22 @@ struct MergeArtifacts {
     identity: String,
     component_name: String,
     schlib_record: Option<SchlibRecord>,
+    /// The built part, for a merge that assembles the library from parts.
     pcblib_library: Option<PcbLibrary>,
+    /// The same part already reduced to the streams a merged library holds, for an
+    /// append merge. Only one of the two is ever set.
+    pcblib_records: Option<PcblibRecordLibrary>,
+}
+
+/// Reduces a built part to its record form as soon as it is built.
+///
+/// An append merge only needs the streams, so keeping the structured library would
+/// hold every exported part in memory until the whole batch had finished.
+fn into_pcblib_records(mut artifacts: IndexedMergeArtifacts) -> Result<IndexedMergeArtifacts> {
+    if let Some(library) = artifacts.artifacts.pcblib_library.take() {
+        artifacts.artifacts.pcblib_records = Some(pcblib_records_from_library(&library)?);
+    }
+    Ok(artifacts)
 }
 
 #[derive(Debug)]
@@ -687,8 +702,9 @@ async fn export_batch_merged_append(
         if let Some(record) = exported.artifacts.schlib_record {
             schlib_records.push(record);
         }
-        if let Some(library) = exported.artifacts.pcblib_library {
-            append_pcblib_library(&mut pcblib_library, pcblib_records_from_library(&library)?);
+        // The part was already reduced to its streams by the task that built it.
+        if let Some(records) = exported.artifacts.pcblib_records {
+            append_pcblib_library(&mut pcblib_library, records);
         }
     }
 
@@ -815,6 +831,7 @@ async fn export_merged_components_parallel(
         options.schematic_stroke_color,
         options.schematic_fill_color,
         parallel,
+        options.append,
         summary,
         progress,
         &mut first_error,
@@ -961,6 +978,7 @@ async fn build_merged_components_parallel(
     schematic_stroke_color: [u8; 3],
     schematic_fill_color: Option<[u8; 3]>,
     parallel: usize,
+    as_records: bool,
     summary: &mut BatchSummary,
     progress: &mut BatchProgress,
     first_error: &mut Option<AppError>,
@@ -988,6 +1006,13 @@ async fn build_merged_components_parallel(
                 schematic_fill_color,
             )
             .await;
+            // An append merge only needs the streams, and reducing the part here keeps
+            // the structured library off the batch's peak.
+            let result = if as_records {
+                result.and_then(into_pcblib_records)
+            } else {
+                result
+            };
             (id, result)
         });
     }
@@ -1078,6 +1103,7 @@ async fn build_named_merged_component(
             component_name: named.component_name,
             schlib_record,
             pcblib_library,
+            pcblib_records: None,
         },
     })
 }
