@@ -21,6 +21,13 @@ const DEFAULT_CORNER_RADIUS_PERCENTAGE: u8 = 25;
 const MIN_COMPONENT_BODY_HEIGHT_MM: f64 = 0.2;
 const CUSTOM_PAD_HOTSPOT_UNITS: f64 = 2.3792;
 const DEFAULT_PAD_SOLDER_MASK_EXPANSION_MIL: f64 = 1.969;
+
+/// Builds a library from a footprint payload and a model's bytes.
+///
+/// The export path spills the model before building (see
+/// `build_pcblib_from_payload_with_model`), so a batch never holds a model per part;
+/// this entry point is for callers that already have the bytes in hand.
+#[cfg_attr(not(test), allow(dead_code))]
 pub fn build_pcblib_from_payload(
     payload: &Value,
     component_name: &str,

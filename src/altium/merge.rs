@@ -517,6 +517,43 @@ fn resolve_section_key(
         }
     }
 
+    // A library written by an older build can key a section on a name none of the
+    // candidates spell exactly — an older rule, a uniqueness suffix, or a name whose
+    // bytes are in the system code page rather than Windows-1252 — so fall back to
+    // the storage whose name matches a candidate once those differences are levelled
+    // out. Without this, appending to such a library fails before it starts.
+    let wanted: Vec<String> = candidates
+        .iter()
+        .map(|key| normalize_section_key(key))
+        .collect();
+    let mut stored: Vec<String> = Vec::new();
+    if let Ok(entries) = compound.walk_storage("/") {
+        for entry in entries {
+            let entry_name = entry.name().to_string();
+            if !entry_name.is_empty() && !stored.contains(&entry_name) {
+                stored.push(entry_name);
+            }
+        }
+    }
+    for entry_name in stored {
+        let normalized = normalize_section_key(&entry_name);
+        let matches_candidate = wanted.iter().any(|key| {
+            normalized == *key
+                || normalized
+                    .strip_prefix(key.as_str())
+                    .is_some_and(|suffix| suffix.starts_with('_'))
+        });
+        if !matches_candidate {
+            continue;
+        }
+        if compound
+            .open_stream(&format!("/{entry_name}/{required_stream}"))
+            .is_ok()
+        {
+            return Ok(entry_name);
+        }
+    }
+
     let tried = candidates
         .iter()
         .map(|section_key| format!("/{section_key}/{required_stream}"))
@@ -525,6 +562,24 @@ fn resolve_section_key(
     Err(AppError::Other(format!(
         "component {name:?} has no {required_stream} stream; tried {tried}"
     )))
+}
+
+/// Section keys differ in case and in which characters they keep, so compare them
+/// with the case folded and the file-name characters levelled out.
+fn normalize_section_key(key: &str) -> String {
+    key.trim()
+        .chars()
+        .map(|character| {
+            if character.is_ascii_control()
+                || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .flat_map(char::to_lowercase)
+        .collect()
 }
 
 fn first_param_block_pairs(data: &[u8], label: &str) -> Result<Vec<(String, String)>> {
@@ -718,14 +773,46 @@ fn legacy_section_key_from_name(name: &str) -> String {
         .collect()
 }
 
+/// A section key derived the way the library turns a name into a file name: only the
+/// characters a file name cannot hold are replaced, so spaces and non-ASCII letters
+/// stay. Older exports keyed their sections this way (`AF 90?WJDG` is stored as
+/// `AF 90_WJDG`), so reading an existing library has to try it.
+fn file_section_key_from_name(name: &str) -> String {
+    if name.is_empty() {
+        return "_".to_string();
+    }
+    name.chars()
+        .take(31)
+        .map(|character| {
+            if character.is_ascii_control()
+                || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+            {
+                '_'
+            } else {
+                character
+            }
+        })
+        .collect()
+}
+
 fn section_key_candidates(name: &str, explicit: Option<&str>, derived: &str) -> Vec<String> {
     let mut candidates = Vec::new();
     if let Some(explicit) = explicit.filter(|value| !value.trim().is_empty()) {
         push_unique_section_key(&mut candidates, explicit.to_string());
     }
     push_unique_section_key(&mut candidates, derived.to_string());
+    push_unique_section_key(&mut candidates, file_section_key_from_name(name));
     push_unique_section_key(&mut candidates, legacy_section_key_from_name(name));
     push_unique_section_key(&mut candidates, name.to_string());
+
+    // A name from an older library is stored in the system code page, so it arrives as
+    // mojibake (`IC座-40P` reads back as `IC×ù-40P`). The repaired spelling is only
+    // ever used when it matches a section the library actually holds.
+    let repaired = crate::util::repair_misdecoded_gbk_text(name);
+    if repaired != name {
+        push_unique_section_key(&mut candidates, file_section_key_from_name(&repaired));
+        push_unique_section_key(&mut candidates, repaired);
+    }
     candidates
 }
 
@@ -1076,8 +1163,8 @@ fn encode_utf8_parameter_value(text: &str) -> String {
 mod tests {
     use super::{
         normalize_lcsc_id, pcblib_records_from_library, read_pcblib_records, read_schlib_records,
-        schlib_file_header_bytes, schlib_record_from_component, schlib_storage_bytes, temp_path,
-        write_pcblib_records, write_schlib_records, write_stream,
+        schlib_file_header_bytes, schlib_record_from_component, schlib_storage_bytes,
+        section_key_candidates, temp_path, write_pcblib_records, write_schlib_records, write_stream,
     };
     use crate::altium::footprint::build_pcblib_from_payload;
     use crate::altium::schlib::{
@@ -1093,6 +1180,29 @@ mod tests {
     fn normalizes_lcsc_ids_case_insensitively() {
         assert_eq!(normalize_lcsc_id(" c2040 ").as_deref(), Some("C2040"));
         assert!(normalize_lcsc_id("RP2040").is_none());
+    }
+
+    #[test]
+    fn section_keys_cover_the_names_older_libraries_used() {
+        // A library written by an older build keys this on the file-name rule.
+        let candidates = section_key_candidates("AF 90?WJDG", None, "AF_90_WJDG");
+        assert!(
+            candidates.iter().any(|key| key == "AF 90_WJDG"),
+            "the file-name spelling has to be tried: {candidates:?}"
+        );
+        // This one has no illegal characters, so the name itself is the key.
+        let candidates = section_key_candidates("IC座-40P", None, "IC_-40P");
+        assert!(
+            candidates.iter().any(|key| key == "IC座-40P"),
+            "a name without illegal characters is its own key: {candidates:?}"
+        );
+        // A name written in the system code page arrives as mojibake, and the repaired
+        // spelling has to be among the keys that get tried.
+        let candidates = section_key_candidates("IC×ù-40P", None, "IC__-40P");
+        assert!(
+            candidates.iter().any(|key| key == "IC座-40P"),
+            "the repaired spelling has to be tried: {candidates:?}"
+        );
     }
 
     #[test]

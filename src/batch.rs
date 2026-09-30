@@ -723,6 +723,28 @@ async fn export_batch_merged_append(
     Ok(summary)
 }
 
+/// Writes into a merged library that seex itself produced.
+///
+/// A library the user has marked read-only (or that a copy left read-only) cannot be
+/// overwritten as it is, and an append into it would otherwise fail with a bare
+/// "access is denied" that says nothing about which file is at fault.
+fn make_writable(path: &Path) -> Result<()> {
+    let Ok(metadata) = fs::metadata(path) else {
+        return Ok(());
+    };
+    let mut permissions = metadata.permissions();
+    if !permissions.readonly() {
+        return Ok(());
+    }
+    permissions.set_readonly(false);
+    fs::set_permissions(path, permissions).map_err(|err| {
+        AppError::Other(format!(
+            "the existing library {} is read-only and cannot be updated: {err}",
+            path.display()
+        ))
+    })
+}
+
 fn write_merged_outputs(
     targets: ExportTargets,
     schlib_records: &[SchlibRecord],
@@ -737,6 +759,7 @@ fn write_merged_outputs(
                 "cannot write merged SchLib without any components".to_string(),
             ));
         }
+        make_writable(schlib_path)?;
         write_schlib_records(schlib_records, schlib_path)?;
         summary.generated_files.push(schlib_path.to_path_buf());
     }
@@ -746,6 +769,7 @@ fn write_merged_outputs(
                 "cannot write merged PcbLib without any components".to_string(),
             ));
         }
+        make_writable(pcblib_path)?;
         write_pcblib_records(pcblib_library, pcblib_path)?;
         summary.generated_files.push(pcblib_path.to_path_buf());
     }
@@ -1381,12 +1405,35 @@ fn format_elapsed(seconds: u64) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        BatchOptions, BatchProgress, ExportTargets, format_elapsed, parse_lcsc_ids,
+        BatchOptions, BatchProgress, ExportTargets, format_elapsed, make_writable, parse_lcsc_ids,
         reject_existing_merged_outputs, resolve_library_name,
     };
     use std::fs;
     use std::path::PathBuf;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn makes_a_read_only_library_writable_again() {
+        let path = std::env::temp_dir().join(format!(
+            "seex_readonly_{}.txt",
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::write(&path, b"library").unwrap();
+        let mut permissions = fs::metadata(&path).unwrap().permissions();
+        permissions.set_readonly(true);
+        fs::set_permissions(&path, permissions).unwrap();
+        assert!(fs::metadata(&path).unwrap().permissions().readonly());
+        assert!(fs::write(&path, b"again").is_err(), "the file starts read-only");
+
+        make_writable(&path).unwrap();
+        assert!(!fs::metadata(&path).unwrap().permissions().readonly());
+        fs::write(&path, b"again").unwrap();
+        assert_eq!(fs::read(&path).unwrap(), b"again");
+        fs::remove_file(path).ok();
+    }
 
     #[test]
     fn parse_ids_deduplicates_and_preserves_order() {

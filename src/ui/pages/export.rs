@@ -52,6 +52,35 @@ fn failed_ids(result: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The reason a run failed, for the page to show.
+///
+/// A failed run reports no counts, so without this a failure that never got as far as
+/// exporting anything looked like a run that did nothing at all.
+fn failure_reason(result: &str) -> Option<String> {
+    let mut lines = result.lines().map(str::trim).filter(|l| !l.is_empty());
+    let status = lines.clone().find(|line| line.starts_with("Status:"))?;
+    if !status.to_ascii_lowercase().contains("failed") {
+        return None;
+    }
+    lines.find(|line| {
+        ![
+            "Status:",
+            "Target:",
+            "Elapsed:",
+            "Failed IDs:",
+            "Failed ids:",
+            "Targets:",
+            "Output directory:",
+            "Library name:",
+            "Parallel:",
+            "Continue on error:",
+        ]
+        .iter()
+        .any(|prefix| line.starts_with(prefix))
+    })
+    .map(ToOwned::to_owned)
+}
+
 impl SeexUi {
     pub(crate) fn export_page(
         &mut self,
@@ -283,6 +312,16 @@ impl SeexUi {
         ));
 
         body = body.child(row);
+
+        if let Some(reason) = result.as_deref().and_then(failure_reason) {
+            body = body.child(
+                div()
+                    .w_full()
+                    .text_size(px(BODY))
+                    .text_color(theme::danger())
+                    .child(reason),
+            );
+        }
 
         components::section(body).into_any_element()
     }
@@ -678,5 +717,28 @@ impl SeexUi {
         body = body.child(div().h(px(34.0)).w_full().child(hint));
 
         components::section(body).into_any_element()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::failure_reason;
+
+    #[test]
+    fn names_the_reason_a_run_failed() {
+        let failed = "Status: Failed\nTarget: Altium\nElapsed: 0.01s\n\
+            io error: Access is denied. (os error 5)\nTargets: Full\n\
+            Output directory: C:/libs\nLibrary name: conn";
+        assert_eq!(
+            failure_reason(failed).as_deref(),
+            Some("io error: Access is denied. (os error 5)")
+        );
+    }
+
+    #[test]
+    fn says_nothing_about_a_run_that_worked() {
+        let ok = "Status: Success\nTarget: Altium\nElapsed: 1.00s\n\
+            export Altium batch complete. Total: 1 | Skipped: 0 | Success: 1 | Failed: 0";
+        assert_eq!(failure_reason(ok), None);
     }
 }
