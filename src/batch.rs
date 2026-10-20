@@ -1443,11 +1443,12 @@ mod tests {
         permissions.set_readonly(true);
         fs::set_permissions(&path, permissions).unwrap();
         assert!(fs::metadata(&path).unwrap().permissions().readonly());
-        assert!(
-            fs::write(&path, b"again").is_err(),
-            "the file starts read-only"
-        );
 
+        // Whether a write is actually refused in this state depends on the
+        // user: root writes to a read-only file regardless, and the containers
+        // the distro builds run in are root. That is a property of the platform,
+        // not of seex; what seex has to do is clear the flag itself, so the flag
+        // is what is checked either side of the call.
         make_writable(&path).unwrap();
         assert!(!fs::metadata(&path).unwrap().permissions().readonly());
         fs::write(&path, b"again").unwrap();
