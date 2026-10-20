@@ -70,8 +70,7 @@ pub fn place_step_on_board(step_data: &[u8]) -> Cow<'_, [u8]> {
         return Cow::Borrowed(step_data);
     };
     let mut placed = Vec::with_capacity(step_data.len());
-    write_shifted(step_data, &points, shift, &mut placed)
-        .expect("writing into memory cannot fail");
+    write_shifted(step_data, &points, shift, &mut placed).expect("writing into memory cannot fail");
     Cow::Owned(placed)
 }
 
@@ -203,7 +202,11 @@ fn parse_model_points(step_data: &[u8]) -> Vec<ModelPoint> {
 
         points.push(ModelPoint {
             coordinates: [values[0].0, values[1].0, values[2].0],
-            spans: [values[0].1.clone(), values[1].1.clone(), values[2].1.clone()],
+            spans: [
+                values[0].1.clone(),
+                values[1].1.clone(),
+                values[2].1.clone(),
+            ],
         });
     }
 
@@ -401,7 +404,11 @@ mod tests {
         let points = (0..400)
             .map(|index| {
                 let t = index as f64 / 399.0;
-                [-5.8 + 11.6 * t, 14.2 * (t * 5.0).fract(), 4.5 * (t * 3.0).fract()]
+                [
+                    -5.8 + 11.6 * t,
+                    14.2 * (t * 5.0).fract(),
+                    4.5 * (t * 3.0).fract(),
+                ]
             })
             .collect::<Vec<_>>();
         let step_data = step_with(&points);

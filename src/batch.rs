@@ -9,12 +9,12 @@ use serde_json::Value;
 use tokio::sync::Semaphore;
 use tokio::task::JoinSet;
 
+use crate::altium::footprint::build_pcblib_from_payload_with_model;
 use crate::altium::merge::{
     PcblibRecordLibrary, SchlibRecord, normalize_lcsc_id, pcblib_records_from_library,
     read_pcblib_records, read_schlib_records, schlib_record_from_component, write_pcblib_records,
     write_schlib_records,
 };
-use crate::altium::footprint::build_pcblib_from_payload_with_model;
 use crate::altium::pcblib::{PcbLibrary, scratch_payload_path, write_pcblib};
 use crate::altium::schlib::NO_FILL_BGR;
 use crate::altium::workflow::{
@@ -1426,7 +1426,10 @@ mod tests {
         permissions.set_readonly(true);
         fs::set_permissions(&path, permissions).unwrap();
         assert!(fs::metadata(&path).unwrap().permissions().readonly());
-        assert!(fs::write(&path, b"again").is_err(), "the file starts read-only");
+        assert!(
+            fs::write(&path, b"again").is_err(),
+            "the file starts read-only"
+        );
 
         make_writable(&path).unwrap();
         assert!(!fs::metadata(&path).unwrap().permissions().readonly());

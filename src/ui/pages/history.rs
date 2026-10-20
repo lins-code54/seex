@@ -117,22 +117,29 @@ impl SeexUi {
                                         locale::t("Copy", "复制"),
                                         {
                                             let copied = content.clone();
-                                            cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                                                copy_to_clipboard(&copied);
-                                                this.show_toast_success(locale::t("Copied", "已复制"));
-                                                cx.notify();
-                                            })
+                                            cx.listener(
+                                                move |this, _event: &ClickEvent, _window, cx| {
+                                                    copy_to_clipboard(&copied);
+                                                    this.show_toast_success(locale::t(
+                                                        "Copied",
+                                                        "已复制",
+                                                    ));
+                                                    cx.notify();
+                                                },
+                                            )
                                         },
                                     ))
                                     .child(components::small_button(
                                         format!("delete-history-{index}"),
                                         locale::t("Delete", "删除"),
-                                        cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                                            if let Ok(mut state) = this.state.lock() {
-                                                state.delete_history(index);
-                                            }
-                                            cx.notify();
-                                        }),
+                                        cx.listener(
+                                            move |this, _event: &ClickEvent, _window, cx| {
+                                                if let Ok(mut state) = this.state.lock() {
+                                                    state.delete_history(index);
+                                                }
+                                                cx.notify();
+                                            },
+                                        ),
                                     )),
                             ),
                     )),

@@ -617,8 +617,12 @@ impl EasyedaApi {
                 .map_err(Into::into),
             ModelSink::File(path) => {
                 let mut writer = BufWriter::new(File::create(path)?);
-                match read_response_body_into(response, STEP_DOWNLOAD_STALL_TIMEOUT_SECS, &mut writer)
-                    .await
+                match read_response_body_into(
+                    response,
+                    STEP_DOWNLOAD_STALL_TIMEOUT_SECS,
+                    &mut writer,
+                )
+                .await
                 {
                     Ok(()) => {
                         writer.flush()?;

@@ -10,11 +10,11 @@ use gpui_kit::*;
 // The swatch element lives in the unstyled base layer, along with the
 // `Selectable` trait `Popover` asks of its trigger.
 use gpui_kit::base::{ColorSwatch, Selectable};
+use gpui_kit::component::Colorize as _;
 use gpui_kit::component::color_picker::ColorPickerState;
 use gpui_kit::component::input::InputState;
 use gpui_kit::component::popover::Popover;
 use gpui_kit::component::slider::{Slider, SliderState};
-use gpui_kit::component::Colorize as _;
 
 use crate::ui::theme;
 
@@ -377,12 +377,7 @@ pub fn font_slot_row(
                 .text_color(theme::text_color())
                 .child(family.into()),
         )
-        .child(selectable(
-            format!("{id}-toggle"),
-            marker,
-            open,
-            on_click,
-        ))
+        .child(selectable(format!("{id}-toggle"), marker, open, on_click))
 }
 
 /// Attaches a hover hint. Rather than a floating tooltip — which landed on top
@@ -817,19 +812,18 @@ fn color_picker_panel(
         let swatch = theme::hsla_of(*preset);
         let selected = color == Some(*preset);
         let picker = picker.clone();
-        let mut tile =
-            ColorSwatch::new(SharedString::from(format!("{id}-preset-{index}")), swatch)
-                .bg(swatch)
-                .w(px(24.0))
-                .h(px(24.0))
-                .rounded(px(theme::RADIUS_SM))
-                .border(px(1.0))
-                .border_color(swatch_edge(swatch))
-                .selected(selected)
-                .cursor_pointer()
-                .on_click(move |color, _event, window, cx| {
-                    picker.update(cx, |state, cx| state.select_color(color, window, cx));
-                });
+        let mut tile = ColorSwatch::new(SharedString::from(format!("{id}-preset-{index}")), swatch)
+            .bg(swatch)
+            .w(px(24.0))
+            .h(px(24.0))
+            .rounded(px(theme::RADIUS_SM))
+            .border(px(1.0))
+            .border_color(swatch_edge(swatch))
+            .selected(selected)
+            .cursor_pointer()
+            .on_click(move |color, _event, window, cx| {
+                picker.update(cx, |state, cx| state.select_color(color, window, cx));
+            });
         if selected {
             // `selected` above is the state assistive technology reads; the ring
             // the eye needs is drawn here, as a zero-blur shadow spread outside

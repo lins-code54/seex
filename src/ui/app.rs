@@ -20,8 +20,8 @@ use gpui_kit::*;
 
 use crate::config::{AppConfig, ExportConfig, MonitorConfig};
 use crate::monitor::{MonitorHandle, MonitorState};
-use crate::ui::locale::{self, Lang};
 use crate::ui::fonts::FontSlot;
+use crate::ui::locale::{self, Lang};
 use crate::ui::{components, fonts, theme};
 
 pub const PATTERN_QUICK: &str = "regex:(?m)^(C\\d{3,})$";
@@ -227,7 +227,10 @@ pub fn set_always_on_top(on_top: bool) {
         SWP_NOSIZE, SetWindowPos,
     };
 
-    let title: Vec<u16> = app_title().encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = app_title()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let hwnd = unsafe { FindWindowW(std::ptr::null(), title.as_ptr()) };
     if hwnd.is_null() {
         return;
@@ -257,7 +260,10 @@ pub fn round_window_corners() {
     const CORNER_PREFERENCE: u32 = 33;
     const ROUND: u32 = 2;
 
-    let title: Vec<u16> = app_title().encode_utf16().chain(std::iter::once(0)).collect();
+    let title: Vec<u16> = app_title()
+        .encode_utf16()
+        .chain(std::iter::once(0))
+        .collect();
     let hwnd = unsafe {
         windows_sys::Win32::UI::WindowsAndMessaging::FindWindowW(std::ptr::null(), title.as_ptr())
     };
@@ -266,7 +272,9 @@ pub fn round_window_corners() {
     }
 
     let mut pid = 0u32;
-    unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid) };
+    unsafe {
+        windows_sys::Win32::UI::WindowsAndMessaging::GetWindowThreadProcessId(hwnd, &mut pid)
+    };
     if pid != std::process::id() {
         return;
     }
@@ -295,7 +303,11 @@ pub fn run() {
         let dark = theme::detect_dark_mode();
         theme::set_dark_mode(dark);
         KitTheme::change(
-            if dark { ThemeMode::Dark } else { ThemeMode::Light },
+            if dark {
+                ThemeMode::Dark
+            } else {
+                ThemeMode::Light
+            },
             None,
             cx,
         );
@@ -365,15 +377,10 @@ pub fn system_font(installed: &[String]) -> &'static str {
 
 /// The monospaced counterpart, for timestamps.
 pub fn mono_font(installed: &[String]) -> &'static str {
-    [
-        "Cascadia Mono",
-        "Consolas",
-        "JetBrains Mono",
-        "Courier New",
-    ]
-    .into_iter()
-    .find(|name| installed.iter().any(|font| font == name))
-    .unwrap_or_else(|| system_font(installed))
+    ["Cascadia Mono", "Consolas", "JetBrains Mono", "Courier New"]
+        .into_iter()
+        .find(|name| installed.iter().any(|font| font == name))
+        .unwrap_or_else(|| system_font(installed))
 }
 
 impl SeexUi {
@@ -392,10 +399,16 @@ impl SeexUi {
 
         let font_names = cx.text_system().all_font_names();
         let mono_family: SharedString = mono_font(&font_names).into();
-        let latin_choices =
-            fonts::choices(&font_names, fonts::FontSlot::Latin, config.latin_font.as_deref());
-        let han_choices =
-            fonts::choices(&font_names, fonts::FontSlot::Han, config.han_font.as_deref());
+        let latin_choices = fonts::choices(
+            &font_names,
+            fonts::FontSlot::Latin,
+            config.latin_font.as_deref(),
+        );
+        let han_choices = fonts::choices(
+            &font_names,
+            fonts::FontSlot::Han,
+            config.han_font.as_deref(),
+        );
         let font_latin: SharedString = config
             .latin_font
             .clone()
@@ -418,16 +431,18 @@ impl SeexUi {
             ImageFormat::Png,
         );
 
-        cx.spawn(async move |this, cx| loop {
-            cx.background_executor()
-                .timer(Duration::from_millis(250))
-                .await;
-            let alive = this.update(cx, |this, cx| {
-                this.tick(cx);
-                cx.notify();
-            });
-            if alive.is_err() {
-                break;
+        cx.spawn(async move |this, cx| {
+            loop {
+                cx.background_executor()
+                    .timer(Duration::from_millis(250))
+                    .await;
+                let alive = this.update(cx, |this, cx| {
+                    this.tick(cx);
+                    cx.notify();
+                });
+                if alive.is_err() {
+                    break;
+                }
             }
         })
         .detach();
@@ -636,10 +651,7 @@ impl SeexUi {
     fn input_seed(&self, slot: InputSlot) -> (&'static str, String) {
         let state = self.state.lock().ok();
         let field = |get: fn(&MonitorState) -> String| {
-            state
-                .as_ref()
-                .map(|state| get(state))
-                .unwrap_or_default()
+            state.as_ref().map(|state| get(state)).unwrap_or_default()
         };
         match slot {
             InputSlot::MatchedPath => (
@@ -930,7 +942,11 @@ impl SeexUi {
     /// has to push new ones, or a box keeps the language it was born in.
     pub fn refresh_placeholders(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.import_input.update(cx, |state, cx| {
-            state.set_placeholder(locale::t("Example: C2040, C42", "示例：C2040, C42"), window, cx);
+            state.set_placeholder(
+                locale::t("Example: C2040, C42", "示例：C2040, C42"),
+                window,
+                cx,
+            );
         });
         for (slot, en, zh) in [
             (InputSlot::MatchedPath, "BOM CSV file", "BOM CSV 文件"),
@@ -958,10 +974,7 @@ impl SeexUi {
         );
         // Keep the kit's own widgets (text boxes, tooltips) on the same face.
         cx.global_mut::<KitTheme>().font_family = family.clone().into();
-        fonts::remember(fonts::ui_font(
-            family.into(),
-            self.han_fallbacks.clone(),
-        ));
+        fonts::remember(fonts::ui_font(family.into(), self.han_fallbacks.clone()));
         self.mark_config_dirty();
     }
 

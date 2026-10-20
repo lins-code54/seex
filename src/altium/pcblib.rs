@@ -236,7 +236,10 @@ impl ModelData {
 
     /// Feeds the model to `sink` in chunks, and removes a scratch file once it has
     /// been handed over.
-    fn stream_into(&self, mut sink: impl FnMut(&[u8]) -> std::io::Result<()>) -> std::io::Result<()> {
+    fn stream_into(
+        &self,
+        mut sink: impl FnMut(&[u8]) -> std::io::Result<()>,
+    ) -> std::io::Result<()> {
         match self {
             ModelData::Bytes(bytes) => sink(bytes),
             ModelData::Scratch(path) => {
@@ -261,7 +264,11 @@ impl ModelData {
 const STORED_BLOCK_LEN: usize = 65_535;
 const COPY_CHUNK_LEN: usize = 64 * 1024;
 
-fn write_stored_block(writer: &mut impl Write, data: &[u8], final_block: bool) -> std::io::Result<()> {
+fn write_stored_block(
+    writer: &mut impl Write,
+    data: &[u8],
+    final_block: bool,
+) -> std::io::Result<()> {
     writer.write_all(&[if final_block { 0x01 } else { 0x00 }])?;
     let len = data.len() as u16;
     writer.write_all(&len.to_le_bytes())?;

@@ -74,22 +74,14 @@ impl SeexUi {
             .into_any_element()
     }
 
-    fn import_and_export_row(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn import_and_export_row(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .flex_row()
             .w_full()
             .gap(px(18.0))
             .child(div().flex_1().child(self.manual_import_panel(cx)))
-            .child(
-                div()
-                    .flex_1()
-                    .child(self.export_files_panel(window, cx)),
-            )
+            .child(div().flex_1().child(self.export_files_panel(window, cx)))
             .into_any_element()
     }
 
@@ -100,9 +92,9 @@ impl SeexUi {
                 count,
                 locale::t("unique ID(s) imported.", "个唯一 ID 已导入。")
             )),
-            Some(ManualImportStatus::NoIds) => Some(
-                locale::t("No LCSC component IDs found.", "未找到立创元件 ID。").to_string(),
-            ),
+            Some(ManualImportStatus::NoIds) => {
+                Some(locale::t("No LCSC component IDs found.", "未找到立创元件 ID。").to_string())
+            }
             None => None,
         };
 
@@ -341,42 +333,37 @@ impl SeexUi {
                 ))
         };
 
-        let mut row = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .gap(px(10.0))
-            .child(
-                div()
-                    .flex()
-                    .flex_row()
-                    .flex_wrap()
-                    .items_center()
-                    .gap(px(12.0))
-                    .child(components::metric_pill(
-                        locale::t("Matched", "匹配结果"),
-                        matched_count,
-                        theme::primary(),
-                    ))
-                    .child(components::button(
-                        "copy-ids",
-                        locale::t("Copy IDs", "复制 ID"),
-                        true,
-                        cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                            this.copy_ids(cx);
-                        }),
-                    ))
-                    .child(components::button(
-                        "export-bom",
-                        export_label,
-                        matched_count > 0 && !bom_running,
-                        cx.listener(|this, _event: &ClickEvent, _window, cx| {
-                            crate::bom::spawn_save_matched(std::sync::Arc::clone(&this.state));
-                            cx.notify();
-                        }),
-                    ))
-                    .child(clear),
-            );
+        let mut row = div().flex().flex_col().w_full().gap(px(10.0)).child(
+            div()
+                .flex()
+                .flex_row()
+                .flex_wrap()
+                .items_center()
+                .gap(px(12.0))
+                .child(components::metric_pill(
+                    locale::t("Matched", "匹配结果"),
+                    matched_count,
+                    theme::primary(),
+                ))
+                .child(components::button(
+                    "copy-ids",
+                    locale::t("Copy IDs", "复制 ID"),
+                    true,
+                    cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        this.copy_ids(cx);
+                    }),
+                ))
+                .child(components::button(
+                    "export-bom",
+                    export_label,
+                    matched_count > 0 && !bom_running,
+                    cx.listener(|this, _event: &ClickEvent, _window, cx| {
+                        crate::bom::spawn_save_matched(std::sync::Arc::clone(&this.state));
+                        cx.notify();
+                    }),
+                ))
+                .child(clear),
+        );
 
         if let Some(result) = bom_result {
             let color = if bom_running {
@@ -417,15 +404,12 @@ impl SeexUi {
             .map(|state| state.matched.clone())
             .unwrap_or_default();
 
-        let mut body = div()
-            .flex()
-            .flex_col()
-            .w_full()
-            .gap(px(10.0))
-            .child(components::section_header_inline(
+        let mut body = div().flex().flex_col().w_full().gap(px(10.0)).child(
+            components::section_header_inline(
                 locale::t("Matched", "匹配结果"),
                 components::count_chip(items.len(), theme::primary()),
-            ));
+            ),
+        );
 
         if items.is_empty() {
             body = body.child(components::empty_state(locale::t(
@@ -468,22 +452,29 @@ impl SeexUi {
                                         locale::t("Copy", "复制"),
                                         {
                                             let id = item.lcsc_id.clone();
-                                            cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                                                crate::ui::app::copy_to_clipboard(&id);
-                                                this.show_toast_success(locale::t("Copied", "已复制"));
-                                                cx.notify();
-                                            })
+                                            cx.listener(
+                                                move |this, _event: &ClickEvent, _window, cx| {
+                                                    crate::ui::app::copy_to_clipboard(&id);
+                                                    this.show_toast_success(locale::t(
+                                                        "Copied",
+                                                        "已复制",
+                                                    ));
+                                                    cx.notify();
+                                                },
+                                            )
                                         },
                                     ))
                                     .child(components::small_button(
                                         format!("delete-matched-{index}"),
                                         locale::t("Delete", "删除"),
-                                        cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                                            if let Ok(mut state) = this.state.lock() {
-                                                state.delete_matched(index);
-                                            }
-                                            cx.notify();
-                                        }),
+                                        cx.listener(
+                                            move |this, _event: &ClickEvent, _window, cx| {
+                                                if let Ok(mut state) = this.state.lock() {
+                                                    state.delete_matched(index);
+                                                }
+                                                cx.notify();
+                                            },
+                                        ),
                                     )),
                             ),
                     )),

@@ -198,9 +198,11 @@ impl SeexUi {
                             .text_color(theme::primary())
                             .underline()
                             .child(locale::t("Download update", "下载更新"))
-                            .on_click(cx.listener(move |_this, _event: &ClickEvent, _window, cx| {
-                                cx.open_url(&url);
-                            })),
+                            .on_click(cx.listener(
+                                move |_this, _event: &ClickEvent, _window, cx| {
+                                    cx.open_url(&url);
+                                },
+                            )),
                     );
                 }
                 body = body.child(line);

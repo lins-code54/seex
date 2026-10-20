@@ -18,11 +18,7 @@ const BODY: f32 = 20.0;
 const PICKER_HEIGHT: f32 = 260.0;
 
 impl SeexUi {
-    pub(crate) fn font_page(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    pub(crate) fn font_page(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         div()
             .flex()
             .flex_col()
@@ -170,21 +166,19 @@ impl SeexUi {
                 for index in matching {
                     let name = choices[index].clone();
                     let is_selected = selected.as_deref() == Some(name.as_str());
-                    list = list.child(
-                        div().mb(px(4.0)).child(components::font_row(
-                            format!("font-{index}"),
-                            name.clone(),
-                            is_selected,
-                            cx.listener(move |this, _event: &ClickEvent, _window, cx| {
-                                match slot {
-                                    FontSlot::Latin => this.set_latin_font(name.clone(), cx),
-                                    FontSlot::Han => this.set_han_font(name.clone()),
-                                }
-                                this.font_picker = None;
-                                cx.notify();
-                            }),
-                        )),
-                    );
+                    list = list.child(div().mb(px(4.0)).child(components::font_row(
+                        format!("font-{index}"),
+                        name.clone(),
+                        is_selected,
+                        cx.listener(move |this, _event: &ClickEvent, _window, cx| {
+                            match slot {
+                                FontSlot::Latin => this.set_latin_font(name.clone(), cx),
+                                FontSlot::Han => this.set_han_font(name.clone()),
+                            }
+                            this.font_picker = None;
+                            cx.notify();
+                        }),
+                    )));
                 }
             }
 

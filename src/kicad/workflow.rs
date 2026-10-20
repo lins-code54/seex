@@ -122,7 +122,8 @@ pub async fn export_kicad_single(options: KicadSingleOptions) -> Result<KicadBat
     export_kicad_batch(batch_options).await
 }
 
-pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatchSummary> {    validate_batch_options(&options)?;
+pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatchSummary> {
+    validate_batch_options(&options)?;
 
     let api = Arc::new(EasyedaApi::new());
     let lcsc_client = options.english_metadata.then(LcscClient::new).map(Arc::new);
@@ -160,7 +161,11 @@ pub async fn export_kicad_batch(options: KicadBatchOptions) -> Result<KicadBatch
     if let Some(progress) = &options.progress {
         // The words come from `crate::progress`, the same ones the Altium batch
         // uses: the two targets report a run the same way.
-        progress(skipped, summary.total, &crate::progress::starting(ids.len()));
+        progress(
+            skipped,
+            summary.total,
+            &crate::progress::starting(ids.len()),
+        );
     }
 
     if ids.is_empty() {

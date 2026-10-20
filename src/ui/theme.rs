@@ -247,7 +247,11 @@ pub fn top_bar_hover() -> Rgba {
 }
 
 pub fn chip_bg(color: Rgba) -> Rgba {
-    let alpha = if is_dark_mode() { 42.0 / 255.0 } else { 24.0 / 255.0 };
+    let alpha = if is_dark_mode() {
+        42.0 / 255.0
+    } else {
+        24.0 / 255.0
+    };
     Rgba { a: alpha, ..color }
 }
 

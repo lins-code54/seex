@@ -527,10 +527,7 @@ mod tests {
         let mut state = MonitorState::new();
         state.process_clipboard_change("C2040\nC4242".to_string());
         let matched = |state: &MonitorState, id: &str| {
-            state
-                .get_unique_ids()
-                .iter()
-                .any(|matched| matched == id)
+            state.get_unique_ids().iter().any(|matched| matched == id)
         };
         assert!(matched(&state, "C2040") && matched(&state, "C4242"));
 

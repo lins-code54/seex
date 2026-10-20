@@ -2403,8 +2403,7 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let path =
-            std::env::temp_dir().join(format!("export_schlib_{tag}_{timestamp}.SchLib"));
+        let path = std::env::temp_dir().join(format!("export_schlib_{tag}_{timestamp}.SchLib"));
         super::write_schlib(component, &path).unwrap();
 
         let file = File::open(&path).unwrap();

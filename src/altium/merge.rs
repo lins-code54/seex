@@ -571,7 +571,10 @@ fn normalize_section_key(key: &str) -> String {
         .chars()
         .map(|character| {
             if character.is_ascii_control()
-                || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
             {
                 '_'
             } else {
@@ -785,7 +788,10 @@ fn file_section_key_from_name(name: &str) -> String {
         .take(31)
         .map(|character| {
             if character.is_ascii_control()
-                || matches!(character, '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*')
+                || matches!(
+                    character,
+                    '<' | '>' | ':' | '"' | '/' | '\\' | '|' | '?' | '*'
+                )
             {
                 '_'
             } else {
@@ -1164,7 +1170,8 @@ mod tests {
     use super::{
         normalize_lcsc_id, pcblib_records_from_library, read_pcblib_records, read_schlib_records,
         schlib_file_header_bytes, schlib_record_from_component, schlib_storage_bytes,
-        section_key_candidates, temp_path, write_pcblib_records, write_schlib_records, write_stream,
+        section_key_candidates, temp_path, write_pcblib_records, write_schlib_records,
+        write_stream,
     };
     use crate::altium::footprint::build_pcblib_from_payload;
     use crate::altium::schlib::{
@@ -1367,7 +1374,10 @@ mod tests {
             .expect("build footprint library again");
         let again = pcblib_records_from_library(&again).expect("capture PcbLib records again");
         let expected = again.models[0].stream.read().expect("read captured model");
-        let actual = round_trip.models[0].stream.read().expect("read round tripped model");
+        let actual = round_trip.models[0]
+            .stream
+            .read()
+            .expect("read round tripped model");
         assert!(!expected.is_empty());
         assert_eq!(actual, expected, "an appended model must keep its stream");
     }

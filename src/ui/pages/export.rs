@@ -62,23 +62,24 @@ fn failure_reason(result: &str) -> Option<String> {
     if !status.to_ascii_lowercase().contains("failed") {
         return None;
     }
-    lines.find(|line| {
-        ![
-            "Status:",
-            "Target:",
-            "Elapsed:",
-            "Failed IDs:",
-            "Failed ids:",
-            "Targets:",
-            "Output directory:",
-            "Library name:",
-            "Parallel:",
-            "Continue on error:",
-        ]
-        .iter()
-        .any(|prefix| line.starts_with(prefix))
-    })
-    .map(ToOwned::to_owned)
+    lines
+        .find(|line| {
+            ![
+                "Status:",
+                "Target:",
+                "Elapsed:",
+                "Failed IDs:",
+                "Failed ids:",
+                "Targets:",
+                "Output directory:",
+                "Library name:",
+                "Parallel:",
+                "Continue on error:",
+            ]
+            .iter()
+            .any(|prefix| line.starts_with(prefix))
+        })
+        .map(ToOwned::to_owned)
 }
 
 impl SeexUi {
@@ -219,10 +220,9 @@ impl SeexUi {
                     state.matched.len(),
                     state.export_running,
                     state.export_last_result.clone(),
-                    state
-                        .export_progress
-                        .as_ref()
-                        .map(|progress| (progress.current, progress.total, progress.message.clone())),
+                    state.export_progress.as_ref().map(|progress| {
+                        (progress.current, progress.total, progress.message.clone())
+                    }),
                 )
             })
             .unwrap_or((0, false, None, None));
@@ -356,11 +356,7 @@ impl SeexUi {
         crate::exporter::spawn_export(std::sync::Arc::clone(&self.state), request);
     }
 
-    fn export_settings_panel(
-        &mut self,
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> AnyElement {
+    fn export_settings_panel(&mut self, window: &mut Window, cx: &mut Context<Self>) -> AnyElement {
         let (target, mode, kicad_mode, merge, append, continue_on_error, force, english) = self
             .state
             .lock()
@@ -396,7 +392,10 @@ impl SeexUi {
             .flex_row()
             .items_center()
             .gap(px(12.0))
-            .child(components::fixed_label(locale::t("EDA target:", "EDA 目标:")))
+            .child(components::fixed_label(locale::t(
+                "EDA target:",
+                "EDA 目标:",
+            )))
             .child(components::selectable(
                 "target-altium",
                 "Altium",
@@ -424,15 +423,16 @@ impl SeexUi {
                 }),
             ));
 
-        let mut scope_row = div()
-            .flex()
-            .flex_row()
-            .items_center()
-            .gap(px(12.0))
-            .child(components::fixed_label(locale::t(
-                "Export scope:",
-                "导出范围:",
-            )));
+        let mut scope_row =
+            div()
+                .flex()
+                .flex_row()
+                .items_center()
+                .gap(px(12.0))
+                .child(components::fixed_label(locale::t(
+                    "Export scope:",
+                    "导出范围:",
+                )));
 
         let modes: [(&'static str, &'static str); 4] = if target == "kicad" {
             [
