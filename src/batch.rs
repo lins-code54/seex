@@ -732,17 +732,34 @@ fn make_writable(path: &Path) -> Result<()> {
     let Ok(metadata) = fs::metadata(path) else {
         return Ok(());
     };
-    let mut permissions = metadata.permissions();
+    let permissions = metadata.permissions();
     if !permissions.readonly() {
         return Ok(());
     }
-    permissions.set_readonly(false);
-    fs::set_permissions(path, permissions).map_err(|err| {
+    fs::set_permissions(path, writable(permissions)).map_err(|err| {
         AppError::Other(format!(
             "the existing library {} is read-only and cannot be updated: {err}",
             path.display()
         ))
     })
+}
+
+/// The same permissions, with permission to write the file.
+///
+/// `set_readonly(false)` is only the right call on Windows. On Unix it clears
+/// every write bit at once, which leaves the library world writable, so the
+/// owner's bit is set instead and the rest of the mode is left alone.
+#[cfg(unix)]
+fn writable(permissions: fs::Permissions) -> fs::Permissions {
+    use std::os::unix::fs::PermissionsExt;
+    fs::Permissions::from_mode(permissions.mode() | 0o200)
+}
+
+#[cfg(not(unix))]
+#[allow(clippy::permissions_set_readonly_false)] // the correct call on Windows
+fn writable(mut permissions: fs::Permissions) -> fs::Permissions {
+    permissions.set_readonly(false);
+    permissions
 }
 
 fn write_merged_outputs(
