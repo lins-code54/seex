@@ -20,6 +20,8 @@ use crate::ui::theme;
 
 const BODY: f32 = 20.0;
 const SMALL: f32 = 14.0;
+/// Width of the label column that lines up the fields in a form.
+const LABEL_COLUMN_WIDTH: f32 = 180.0;
 
 /// A filled button in the egui style: 40px tall, `field_bg`, 1px border.
 pub fn button(
@@ -303,11 +305,17 @@ pub fn fixed_label(label: impl Into<SharedString>) -> impl IntoElement {
     div()
         .flex()
         .items_center()
-        .w(px(180.0))
+        .w(px(LABEL_COLUMN_WIDTH))
         .h(px(30.0))
         .text_size(px(BODY))
         .text_color(theme::muted())
         .child(label.into())
+}
+
+/// The empty column a row without its own label leads with, so that its controls
+/// line up with the ones in the labelled rows above it.
+pub fn label_gutter() -> impl IntoElement {
+    div().w(px(LABEL_COLUMN_WIDTH)).flex_shrink_0()
 }
 
 pub fn empty_state(label: impl Into<SharedString>) -> impl IntoElement {

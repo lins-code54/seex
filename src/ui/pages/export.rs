@@ -479,8 +479,7 @@ impl SeexUi {
             .flex_row()
             .flex_wrap()
             .items_center()
-            .justify_center()
-            .w_full()
+            .flex_1()
             .gap(px(12.0));
 
         // Merge belongs to Altium alone: a KiCad export always writes one named
@@ -699,7 +698,19 @@ impl SeexUi {
                             .child(Input::new(&parallel_input).h(px(30.0))),
                     ),
             )
-            .child(toggles);
+            // These options have no label of their own, so they lead with the
+            // same gutter the labelled rows above use. Keeping the gutter
+            // outside the wrapping row lines every wrapped line up with `Full`
+            // and `SchLib`, rather than only the first.
+            .child(
+                div()
+                    .flex()
+                    .flex_row()
+                    .w_full()
+                    .gap(px(12.0))
+                    .child(components::label_gutter())
+                    .child(toggles),
+            );
 
         // The explanation for a toggle sits directly under the row, where it is
         // next to the button it describes and has room to be read in full.
