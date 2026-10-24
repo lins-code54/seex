@@ -1,9 +1,8 @@
 //! OrCAD Capture symbol export.
 //!
 //! Capture's native `.olb` format is an undocumented binary container, but Capture
-//! (16.6 and later, including OrCAD X) converts a "Library XML" file into an `.olb`
-//! with its `XMATIC_XML2OLB` Tcl command, which `cadence::tools` runs headlessly. This
-//! module writes that XML.
+//! (16.6 and later, including OrCAD X) turns a "Library XML" file into an `.olb`
+//! (`File > Import > Library XML`). This module writes that XML.
 //!
 //! The element layout, attribute names and enumerations below mirror files exported
 //! by Capture 17.2 itself (`File > Export > Library XML`):
@@ -14,7 +13,11 @@
 //!   and `startX/Y` the end touching the body; pin numbers live in `PhysicalPart`;
 //! * pin types: 0 input, 1 bidirectional, 2 output, 3 open collector, 4 passive,
 //!   5 tri-state, 6 open emitter, 7 power;
-//! * fill styles: 0 solid, 1 none.
+//! * fill styles: 0 solid, 1 none;
+//! * a symbol with EasyEDA sub-parts becomes a heterogeneous package
+//!   (`isHomogeneous="0"`) with one `LibPart` per section, named after the package
+//!   plus the section letter (`RK3576_C42388007A`, ...B), as Capture stores
+//!   MAX628 in its own `MiscPower.olb`.
 //!
 //! Emitted elements: `Rect`, `Line`, `Polygon`, `Ellipse`, `Arc` and `CommentText` (all
 //! in Capture's `olb.xsd`); arcs smaller than a Capture unit become line segments.
@@ -30,8 +33,6 @@ use crate::kicad::symbol::{
 
 /// Capture's standard pin grid (0.1 inch).
 pub const CAPTURE_GRID: i64 = 10;
-/// Horizontal gap between EasyEDA sub-parts when they are merged into one Capture part.
-const UNIT_GAP: f64 = 40.0;
 /// Default Capture colour index used by its own exports for symbol graphics.
 const SYMBOL_COLOR: &str = "48";
 
@@ -70,23 +71,90 @@ pub fn build_capture_part_with(
     labels: PinLabels,
 ) -> CapturePart {
     let mut warnings = Vec::new();
-    let mut geometry = merged_geometry(symbol, &mut warnings);
-    let jogs = align_to_grid(&mut geometry);
+    let sections = sections(symbol);
+    // One section is an ordinary part; EasyEDA sub-parts become the sections of a
+    // heterogeneous Capture package (U1A, U1B, ...), each drawn on its own, the
+    // way Capture's own libraries store them: one `LibPart` per section, named
+    // after the package plus the section letter, each with its own pin numbers.
+    let heterogeneous = sections.len() > 1;
+    let mut jogs = 0;
+    let mut lib_parts = String::new();
+    for (index, mut geometry) in sections.into_iter().enumerate() {
+        jogs += align_to_grid(&mut geometry);
+        let cell = if heterogeneous {
+            format!("{part_name}{}", section_letter(index))
+        } else {
+            part_name.to_string()
+        };
+        lib_parts.push_str(&lib_part_xml(
+            symbol,
+            &geometry,
+            &cell,
+            part_name,
+            labels,
+            &mut warnings,
+        ));
+    }
     if jogs > 0 {
         warnings.push(format!(
             "{jogs} pin(s) sat between grid lines; moved onto the 0.1\" grid with a short jog to the body"
         ));
     }
+
+    let mut xml = String::new();
+    let _ = writeln!(xml, "  <Package>");
+    let _ = writeln!(
+        xml,
+        "    <Defn alphabeticNumbering=\"1\" isHomogeneous=\"{}\" name=\"{}\" pcbFootprint=\"{}\" pcbLib=\"\" refdesPrefix=\"{}\" timestamp=\"0\" timezone=\"0\"/>",
+        if heterogeneous { 0 } else { 1 },
+        xml_escape(part_name),
+        xml_escape(footprint),
+        xml_escape(&refdes_prefix(&symbol.reference))
+    );
+    xml.push_str(&lib_parts);
+    let _ = writeln!(xml, "  </Package>");
+
+    CapturePart {
+        name: part_name.to_string(),
+        xml,
+        warnings,
+    }
+}
+
+/// Section letters as Capture numbers them: A..Z, then AA, AB, ...
+fn section_letter(index: usize) -> String {
+    let mut index = index;
+    let mut letters = Vec::new();
+    loop {
+        letters.push(b'A' + (index % 26) as u8);
+        if index < 26 {
+            break;
+        }
+        index = index / 26 - 1;
+    }
+    letters.reverse();
+    String::from_utf8(letters).unwrap_or_default()
+}
+
+/// One `<LibPart>`: the drawing and pin numbers of one section.
+fn lib_part_xml(
+    symbol: &KiSymbol,
+    geometry: &KiSymbolUnit,
+    cell: &str,
+    part_name: &str,
+    labels: PinLabels,
+    warnings: &mut Vec<String>,
+) -> String {
     // Capture's part editor takes the body outline's top-left corner as the part
     // origin (every part Cadence ships has its outline at 0,0): with the origin
     // anywhere else, a pin moved in the editor is redrawn from the origin. Lay the
     // part out once to find the outline, then again shifted onto the origin.
-    let mut layout = CaptureLayout::new(&geometry);
+    let mut layout = CaptureLayout::new(geometry);
     let mut scratch = Vec::new();
-    let (_, _, outline) = draw_unit(&geometry, &layout, &mut scratch);
+    let (_, _, outline) = draw_unit(geometry, &layout, &mut scratch);
     layout.dx -= outline.x1 as f64;
     layout.dy -= outline.y1 as f64;
-    let (graphics, pins, bbox) = draw_unit(&geometry, &layout, &mut warnings);
+    let (graphics, pins, bbox) = draw_unit(geometry, &layout, warnings);
 
     let mut pin_xml = String::new();
     let mut physical = String::new();
@@ -108,16 +176,8 @@ pub fn build_capture_part_with(
     };
 
     let mut xml = String::new();
-    let _ = writeln!(xml, "  <Package>");
-    let _ = writeln!(
-        xml,
-        "    <Defn alphabeticNumbering=\"1\" isHomogeneous=\"1\" name=\"{}\" pcbFootprint=\"{}\" pcbLib=\"\" refdesPrefix=\"{}\" timestamp=\"0\" timezone=\"0\"/>",
-        xml_escape(part_name),
-        xml_escape(footprint),
-        xml_escape(&reference)
-    );
     let _ = writeln!(xml, "    <LibPart>");
-    let _ = writeln!(xml, "      <Defn CellName=\"{}\"/>", xml_escape(part_name));
+    let _ = writeln!(xml, "      <Defn CellName=\"{}\"/>", xml_escape(cell));
     let _ = writeln!(xml, "      <NormalView>");
     let _ = writeln!(xml, "        <Defn suffix=\".Normal\"/>");
     // Labels go outside the pins so top/bottom pin names stay readable.
@@ -181,13 +241,7 @@ pub fn build_capture_part_with(
     xml.push_str(&physical);
     let _ = writeln!(xml, "      </PhysicalPart>");
     let _ = writeln!(xml, "    </LibPart>");
-    let _ = writeln!(xml, "  </Package>");
-
-    CapturePart {
-        name: part_name.to_string(),
-        xml,
-        warnings,
-    }
+    xml
 }
 
 /// Wrap `<Package>` fragments into a complete Capture Library XML document.
@@ -296,13 +350,12 @@ fn user_properties(symbol: &KiSymbol) -> Vec<(&'static str, String)> {
     props
 }
 
-/// All graphics and pins of the symbol in one coordinate space (EasyEDA px, Y up).
-///
-/// EasyEDA sub-parts are laid out side by side: Capture supports heterogeneous
-/// packages, but their Library XML encoding is not something we can verify, so a
-/// single-section part with every pin is the safe, electrically complete choice.
-fn merged_geometry(symbol: &KiSymbol, warnings: &mut Vec<String>) -> KiSymbolUnit {
-    let flat = KiSymbolUnit {
+/// The sections of the Capture part, each in its own coordinate space (EasyEDA
+/// px, Y up): the whole symbol, or one per EasyEDA sub-part. Graphics and pins
+/// the symbol has outside its sub-parts belong to every section, as KiCad's
+/// unit 0 does.
+fn sections(symbol: &KiSymbol) -> Vec<KiSymbolUnit> {
+    let common = KiSymbolUnit {
         pins: symbol.pins.clone(),
         rectangles: symbol.rectangles.clone(),
         circles: symbol.circles.clone(),
@@ -310,37 +363,22 @@ fn merged_geometry(symbol: &KiSymbol, warnings: &mut Vec<String>) -> KiSymbolUni
         polylines: symbol.polylines.clone(),
         texts: symbol.texts.clone(),
     };
-    if symbol.units.is_empty() {
-        return flat;
+    let units: Vec<&KiSymbolUnit> = symbol
+        .units
+        .iter()
+        .filter(|unit| unit_has_content(unit))
+        .collect();
+    if units.is_empty() {
+        return vec![common];
     }
-
-    let mut sections: Vec<&KiSymbolUnit> = Vec::new();
-    if unit_has_content(&flat) {
-        sections.push(&flat);
-    }
-    sections.extend(symbol.units.iter().filter(|unit| unit_has_content(unit)));
-    if sections.len() > 1 {
-        warnings.push(format!(
-            "{} sub-parts merged side by side into one Capture section",
-            sections.len()
-        ));
-    }
-
-    let mut merged = KiSymbolUnit::default();
-    let mut cursor_x: Option<f64> = None;
-    for section in sections {
-        let Some((min_x, _, max_x, _)) = unit_bounds(section) else {
-            continue;
-        };
-        let dx = match cursor_x {
-            None => 0.0,
-            // Keep sections on the pin grid so wires still snap.
-            Some(cursor) => snap(cursor + UNIT_GAP - min_x, CAPTURE_GRID as f64),
-        };
-        cursor_x = Some(max_x + dx);
-        append_translated(&mut merged, section, dx);
-    }
-    merged
+    units
+        .into_iter()
+        .map(|unit| {
+            let mut section = unit.clone();
+            append_translated(&mut section, &common, 0.0);
+            section
+        })
+        .collect()
 }
 
 /// Direction from a pin's connection point towards the body (EasyEDA px, Y up).

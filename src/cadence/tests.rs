@@ -179,7 +179,7 @@ fn capture_renames_duplicate_pin_numbers() {
 }
 
 #[test]
-fn capture_merges_sub_parts_without_overlap() {
+fn sub_parts_become_sections_of_a_heterogeneous_package() {
     let mut symbol = sample_symbol();
     let unit = KiSymbolUnit {
         pins: symbol.pins.clone(),
@@ -197,18 +197,43 @@ fn capture_merges_sub_parts_without_overlap() {
     symbol.polylines.clear();
 
     let part = build_capture_part(&symbol, "DUAL", "dual");
-    assert_eq!(part.xml.matches("<SymbolPinScalar>").count(), 10);
-    assert_eq!(part.xml.matches("<Rect>").count(), 2);
-    let rect_x: Vec<i64> = part
-        .xml
-        .match_indices("<Rect>")
-        .map(|(index, _)| attr(&part.xml, index, "x1").parse().unwrap())
-        .collect();
-    assert!(
-        rect_x[1] - rect_x[0] >= 40 + 40,
-        "sections laid out side by side"
-    );
-    assert!(part.warnings.iter().any(|w| w.contains("merged")));
+    let xml = &part.xml;
+    // As Capture stores MAX628 in MiscPower.olb: one LibPart per section, named
+    // after the package plus the section letter.
+    assert!(xml.contains("isHomogeneous=\"0\""));
+    assert_eq!(xml.matches("<LibPart>").count(), 2);
+    assert!(xml.contains("<Defn CellName=\"DUALA\"/>"));
+    assert!(xml.contains("<Defn CellName=\"DUALB\"/>"));
+    assert_eq!(xml.matches("<PhysicalPart>").count(), 2);
+    assert_eq!(xml.matches("<SymbolPinScalar>").count(), 10);
+    // Each section is drawn on its own, at the origin, with its own pin numbers.
+    let sections: Vec<&str> = xml.split("<LibPart>").skip(1).collect();
+    for section in &sections {
+        assert_eq!(section.matches("<Rect>").count(), 1);
+        assert_capture_body_rules(&format!("<LibPart>{section}"));
+    }
+    assert!(sections[0].contains("number=\"1\""));
+    assert!(sections[1].contains("number=\"10\""));
+    assert!(!sections[1].contains("number=\"1\" "));
+    // Pins never share a connection point.
+    for section in &sections {
+        let mut hot: Vec<(i64, i64)> = pin_points(section)
+            .into_iter()
+            .map(|(_, x, y, _, _)| (x, y))
+            .collect();
+        let count = hot.len();
+        hot.sort();
+        hot.dedup();
+        assert_eq!(hot.len(), count);
+    }
+}
+
+#[test]
+fn single_symbols_stay_homogeneous() {
+    let part = build_capture_part(&sample_symbol(), "LM321_C7950", "c7950_lm321");
+    assert!(part.xml.contains("isHomogeneous=\"1\""));
+    assert_eq!(part.xml.matches("<LibPart>").count(), 1);
+    assert!(part.xml.contains("<Defn CellName=\"LM321_C7950\"/>"));
 }
 
 #[test]
